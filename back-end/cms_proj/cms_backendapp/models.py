@@ -52,6 +52,10 @@ def generate_prefixed_id(entity_type: str, prefix: str, width: int = 4, with_yea
 class Department(models.Model):
     department_id = models.CharField(max_length=15, primary_key=True)
     name = models.CharField(max_length=100, unique=True)
+    code = models.CharField(max_length=15, unique=True, null=True, blank=True)
+    head_doctor = models.ForeignKey("Staff", on_delete=models.SET_NULL, null=True, blank=True, related_name="headed_departments")
+    default_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, validators=[MinValueValidator(0)])
+    is_bookable = models.BooleanField(default=True)
     description = models.CharField(max_length=255, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -95,6 +99,11 @@ class LabTestCatalog(models.Model):
     """
     test_catalog_id = models.CharField(max_length=15, primary_key=True)
     test_name = models.CharField(max_length=100, unique=True)
+    code = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    category = models.CharField(max_length=50, null=True, blank=True)
+    sample_type = models.CharField(max_length=50, null=True, blank=True)
+    parameters = models.JSONField(default=list, blank=True)
+    turnaround_hrs = models.IntegerField(default=4)
     description = models.TextField(blank=True, null=True)
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True,
@@ -127,8 +136,12 @@ class Staff(models.Model):
     """Professional/personal record for every employee (all 5 roles)."""
     staff_id = models.CharField(max_length=15, primary_key=True)
     name = models.CharField(max_length=100)
-    phone = models.CharField(max_length=15, blank=True, null=True)
+    designation = models.CharField(max_length=100, null=True, blank=True)
+    department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True, related_name="staff_members")
+    role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name="staff_members")
+    phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(max_length=100, unique=True, blank=True, null=True)
+    avatar_url = models.CharField(max_length=255, null=True, blank=True)
     date_joined = models.DateField(blank=True, null=True)
     is_active = models.BooleanField(default=True)  # employment status (soft delete)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -161,6 +174,8 @@ class User(models.Model):
     username = models.CharField(max_length=50, unique=True)
     password_hash = models.CharField(max_length=255)
     role = models.ForeignKey(Role, on_delete=models.PROTECT, related_name="users")
+    failed_attempts = models.IntegerField(default=0)
+    locked_until = models.DateTimeField(blank=True, null=True)
     is_active = models.BooleanField(default=True)  # login/account status
     last_login = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -179,8 +194,86 @@ class User(models.Model):
     def check_password(self, raw_password: str) -> bool:
         return check_password(raw_password, self.password_hash)
 
+    @property
+    def id(self):
+        return self.user_id
+
+    @property
+    def is_authenticated(self):
+        return True
+
+    @property
+    def is_anonymous(self):
+        return False
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         if not self.user_id:
             self.user_id = generate_prefixed_id("USER", "USR")
+        super().save(*args, **kwargs)
+
+
+class Notification(models.Model):
+    notification_id = models.CharField(max_length=20, primary_key=True)
+    notification_type = models.CharField(max_length=30)
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    target_role = models.CharField(max_length=30, blank=True, null=True)
+    target_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="notifications")
+    is_read = models.BooleanField(default=False)
+    link = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "notifications"
+
+    def __str__(self):
+        return self.title
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        if not self.notification_id:
+            self.notification_id = generate_prefixed_id("NOTIFICATION", "NOTIF")
+        super().save(*args, **kwargs)
+
+
+class Setting(models.Model):
+    setting_id = models.CharField(max_length=20, primary_key=True)
+    key = models.CharField(max_length=100, unique=True)
+    value = models.TextField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "settings"
+
+    def __str__(self):
+        return self.key
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        if not self.setting_id:
+            self.setting_id = generate_prefixed_id("SETTING", "SET")
+        super().save(*args, **kwargs)
+
+
+class AuditLog(models.Model):
+    log_id = models.CharField(max_length=20, primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_logs")
+    action = models.CharField(max_length=50)
+    entity_type = models.CharField(max_length=50)
+    entity_id = models.CharField(max_length=50)
+    details = models.JSONField(default=dict, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "audit_log"
+
+    def __str__(self):
+        return f"{self.action} on {self.entity_type}:{self.entity_id}"
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        if not self.log_id:
+            self.log_id = generate_prefixed_id("AUDIT_LOG", "LOG")
         super().save(*args, **kwargs)

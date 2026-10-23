@@ -20,6 +20,8 @@ class LabTestResult(models.Model):
     )
     result_date = models.DateField()
     result_data = models.TextField(blank=True, null=True)
+    results = models.JSONField(default=list, blank=True)
+    is_critical = models.BooleanField(default=False)
     remarks = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

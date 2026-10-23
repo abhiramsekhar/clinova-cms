@@ -1,30 +1,55 @@
 # Project Progress & Implementation Status
 
 ## Current Phase: Phase 1 (Backend API)
-**Last Completed Step**: 1a  
-**Next Step**: 1b (New models + enum changes from GAP_REPORT + migrations; run migrate)
+**Last Completed Step**: 1d-reception (Reception serializers, ViewSets, URLs under /api/, permissions, filters, money in paise, 14 passing tests)  
+**Next Step**: 1d-doctor (Resource ViewSets/serializers/urls for Doctor group)
 
 ---
 
 ## Progress Log
 
 ### Step 1a (Completed)
-- **Dependencies Installed**:
-  - `djangorestframework==3.18.3`
-  - `djangorestframework_simplejwt==5.5.1`
-  - `django-cors-headers==4.9.0`
-  - `PyJWT==2.15.1`
+- **Dependencies Installed**: `djangorestframework`, `djangorestframework_simplejwt`, `django-cors-headers`.
 - **Requirements Frozen**: `back-end/requirements.txt` updated.
-- **Environment & Settings Configured**:
-  - `back-end/.env`: added `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`.
-  - `back-end/cms_proj/cms_proj/settings.py`:
-    - Decoupled `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`.
-    - Added `rest_framework`, `rest_framework_simplejwt`, `corsheaders` to `INSTALLED_APPS`.
-    - Added `corsheaders.middleware.CorsMiddleware` to `MIDDLEWARE`.
-    - Configured `REST_FRAMEWORK` default authentication (`JWTAuthentication`), permission (`IsAuthenticated`), pagination (`PageNumberPagination`, page size 20).
-    - Configured `SIMPLE_JWT` token lifetimes (access 60 min, refresh 24 hours).
-- **Validation**: `python manage.py check` executed with 0 errors (1 expected MySQL warning regarding conditional unique constraint, to be handled in application layer).
-- **Documentation**: Documented Staff <-> Doctor ID bridge and integer paise Money representation in `docs/API_CONTRACT.md`.
+- **Environment & Settings Configured**: Decoupled config for SECRET_KEY, DEBUG, ALLOWED_HOSTS, CORS; configured DRF + SimpleJWT defaults.
+- **Validation**: `python manage.py check` executed with 0 errors.
+
+### Step 1c (Completed)
+- **Custom JWT Authentication**: Created `CustomJWTAuthentication` in `cms_backendapp/authentication.py`, resolving users from the project's `users` table (`cms_backendapp.models.User`). Added `id`, `is_authenticated`, `is_anonymous` properties to `User`.
+- **Role Permission System**: Created `IsRole` in `cms_backendapp/permissions.py` matching frontend `guard.js` roles (`ADMIN`, `DOCTOR`, `RECEPTIONIST`, `PHARMACIST`, `LAB_TECH`), supporting direct instance and class-level usage.
+- **Auth Endpoints Implemented**:
+  - `POST /api/auth/login/`: Validates credentials with `check_password`, checks account lockout and inactive flags, returns access+refresh tokens and canonical `{ id, name, role, staffId, staffName, avatarUrl, departmentId }` user payload.
+  - `GET /api/auth/me/`: Returns authenticated user profile.
+  - `POST /api/auth/refresh/`: Refreshes access token.
+  - `POST /api/auth/logout/`: Client-side token discard returning HTTP 204 No Content.
+- **Routing**: Mounted auth routes under `/api/auth/` in `cms_proj/urls.py` via `cms_backendapp/urls.py` & `urls_auth.py`.
+- **Automated Tests**: Implemented comprehensive test suite in `cms_backendapp/tests.py` (9 tests covering login success, bad password, non-existent user, inactive account, authenticated/unauthenticated /me, token refresh, logout, and role 401/403/200 permission enforcement). All 9 passed (0 errors).
+
+### Step 1f (Completed)
+- **Schema Alignment**: Added all missing models and fields from `docs/GAP_REPORT.md` across project apps (`Supplier`, `PurchaseOrder`, `StockLedgerEntry`, `Notification`, `Setting`, `AuditLog`, plus missing fields on `Department`, `Staff`, `User`, `LabTestCatalog`, `Medicine`, `ConsultationRecord`, `Prescription`, `LabTest`, `Patient`, `Appointment`, `Bill`, `Payment`).
+- **Migrations Generated & Applied**: Generated new migration files for `cms_backendapp`, `cms_doctorapp`, `cms_labapp`, `cms_pharmapp`, `cms_recepapp` without modifying any `0001_initial.py` files. Applied via `python manage.py migrate`.
+- **Command Created**: Implemented `python manage.py seed_demo [--reset]` in `cms_backendapp/management/commands/seed_demo.py`.
+  - `--reset`: Clears only the 24 application tables (never `auth_*` or `django_*` tables), then loads all entities from `seed.js`.
+  - Without `--reset`: Adds missing rows idempotently.
+  - Generates Django-hashed passwords using `make_password`.
+  - Preserves exact frontend ID schemes (`dept-01`, `staff-doc-01`, `pat-01`, `appt-001`, `med-01`, `test-01`, etc.).
+  - Successfully seeded and verified: 5 roles, 6 departments, 14 staff, 7 doctors, 14 users, 24 patients, 45 appointments, 19 consultations, 28 medicines, 26 prescriptions (37 items), 4 suppliers, 6 purchase orders, 5 stock ledger entries, 12 lab catalog tests, 30 lab orders (18 results), 10 bills (26 items), 8 payments, 8 notifications, 8 settings.
+  - Prints clean demo login credentials table.
+- **Verification**: Ran `manage.py test cms_backendapp` with all 9 tests passing (0 errors).
+
+### Step 1d-reception (Completed)
+- **Services & Logic**: Created `cms_recepapp/services.py` for slot board calculations, walk-in slot finding, consultation and registration fee resolution from DB settings and doctor/department records.
+- **Serializers**: Implemented `PatientSerializer`, `AppointmentSerializer`, `BillSerializer`, `BillItemSerializer`, and `PaymentSerializer` in `cms_recepapp/serializers.py`:
+  - Enforced integer paise for wire amounts (`totalAmount`, `paidAmount`, `balanceDue`, `amount`).
+  - Seamless `GenderField` supporting `"Male"`/`"Female"` frontend format and `"M"`/`"F"` backend storage.
+  - Under-18 guardian validation, duplicate checks, and sequential MRN / ID generation.
+  - Staff <-> Doctor ID bridge mapping (`doctorId` matches `staff_id`, e.g. `staff-doc-01`).
+- **ViewSets**: Built `PatientViewSet`, `AppointmentViewSet`, `BillViewSet`, `PaymentViewSet` in `cms_recepapp/views.py`:
+  - Query optimization via `select_related('patient', 'doctor__staff', 'department')` and `prefetch_related('bills', 'items', 'payments')`.
+  - Search and filtering for name, MRN, phone, doctor, date, and status.
+  - Actions: `precheck`, `register-and-pay`, `clinical-history`, `slot-board`, `next-walkin-slot`, `consultation-fee`, `book-and-pay`, `check-in`, `cancel`, `no-show`, `update-status`, `receive-payment`, `payments`.
+- **Routing**: Configured `cms_recepapp/urls.py` with DRF `DefaultRouter` and connected to `/api/` in `cms_proj/urls.py`.
+- **Automated Tests**: Implemented 14 tests in `cms_recepapp/tests.py` covering all reception operations, permissions, paise conversions, and ID mappings. Ran and verified: 14 passed (0 errors, 0 failures).
 
 ---
 
@@ -40,13 +65,15 @@
 4. **Model Modifications**:
    - All new model fields must have `default=` or `null=True`.
    - No modifications to existing `0001_initial.py` migrations; all changes in new migration files.
+5. **Auth Logout Strategy**: Client-side token discard returning HTTP 204 No Content.
 
 ---
 
 ## Next Steps
-- **1b**: Implement new models (Supplier, PurchaseOrder, StockLedgerEntry, Notification, AuditLog, Setting) and enum additions from `docs/GAP_REPORT.md` across apps, generate migrations, and run `python manage.py migrate`.
-- **1c**: Auth endpoints (`login`, `me`, `refresh`, `logout`) + role-based permissions (`IsRole`).
-- **1d**: Resource ViewSets, serializers, and URLs by domain (reception, doctor, pharmacy, lab, admin).
+- **1d-doctor**: Resource ViewSets, serializers, and URLs for doctor domain (doctors, consultations, prescriptions, lab orders, clinical history).
+- **1d-pharmacy**: Pharmacy domain (medicines, dispensing, suppliers, purchase orders, stock).
+- **1d-lab**: Lab domain (catalog, tests, results).
+- **1d-admin**: Admin domain (users, staff, departments, settings, audit log, reports, notifications).
 - **1e**: Business logic endpoints (book-and-pay, dispense, enter-result, consultation lock, double-booking prevention).
-- **1f**: `seed_demo` command with `--reset` support.
-- **1g**: Test suite + `docs/smoke_test.md`.
+- **1g**: Comprehensive tests + `docs/smoke_test.md`.
+

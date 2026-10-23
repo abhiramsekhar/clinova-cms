@@ -17,15 +17,19 @@ class Patient(models.Model):
         OTHER = "Other", "Other"
 
     patient_id = models.CharField(max_length=15, primary_key=True)
+    mrn = models.CharField(max_length=30, unique=True, null=True, blank=True)
     name = models.CharField(max_length=100)
-    phone = models.CharField(max_length=15, blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(max_length=100, blank=True, null=True)
     dob = models.DateField(blank=True, null=True)
-    gender = models.CharField(max_length=10, choices=Gender.choices, blank=True, null=True)
-    blood_group = models.CharField(max_length=5, blank=True, null=True)
+    gender = models.CharField(max_length=15, choices=Gender.choices, blank=True, null=True)
+    blood_group = models.CharField(max_length=10, blank=True, null=True)
     address = models.TextField(blank=True, null=True)
-    emergency_contact = models.CharField(max_length=15, blank=True, null=True)
+    emergency_contact = models.CharField(max_length=20, blank=True, null=True)
+    guardian_name = models.CharField(max_length=100, blank=True, null=True)
+    guardian_phone = models.CharField(max_length=20, blank=True, null=True)
     allergies = models.TextField(blank=True, null=True)
+    chronic_conditions = models.JSONField(default=list, blank=True)
     assigned_doctor = models.ForeignKey(
         "cms_doctorapp.Doctor", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="patients",
@@ -55,17 +59,28 @@ class Patient(models.Model):
 class Appointment(models.Model):
     class Status(models.TextChoices):
         SCHEDULED = "SCHEDULED", "Scheduled"
+        CHECKED_IN = "CHECKED_IN", "Checked In"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
         COMPLETED = "COMPLETED", "Completed"
         CANCELLED = "CANCELLED", "Cancelled"
+        NO_SHOW = "NO_SHOW", "No Show"
 
     appointment_id = models.CharField(max_length=15, primary_key=True)
     patient = models.ForeignKey(Patient, on_delete=models.PROTECT, related_name="appointments")
     doctor = models.ForeignKey(
         "cms_doctorapp.Doctor", on_delete=models.PROTECT, related_name="appointments"
     )
+    department = models.ForeignKey(
+        "cms_backendapp.Department", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="appointments"
+    )
     appointment_date = models.DateField()
     time_slot = models.CharField(max_length=20)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.SCHEDULED)
+    appointment_type = models.CharField(max_length=30, default="New Visit")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
+    reason = models.TextField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    token_number = models.IntegerField(null=True, blank=True)
     created_by = models.ForeignKey(
         "cms_backendapp.Staff", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="appointments_created",
@@ -85,7 +100,7 @@ class Appointment(models.Model):
             # unless the earlier appointment was cancelled.
             models.UniqueConstraint(
                 fields=["doctor", "appointment_date", "time_slot"],
-                condition=models.Q(status__in=["SCHEDULED", "COMPLETED"]),
+                condition=models.Q(status__in=["SCHEDULED", "CHECKED_IN", "IN_PROGRESS", "COMPLETED"]),
                 name="uq_appt_active_slot",
             ),
         ]
@@ -105,6 +120,7 @@ class Bill(models.Model):
         UNPAID = "UNPAID", "Unpaid"
         PARTIAL = "PARTIAL", "Partial"
         PAID = "PAID", "Paid"
+        CANCELLED = "CANCELLED", "Cancelled"
 
     bill_id = models.CharField(max_length=15, primary_key=True)
     patient = models.ForeignKey(Patient, on_delete=models.PROTECT, related_name="bills")
@@ -117,7 +133,7 @@ class Bill(models.Model):
     # Cache kept in sync by Payment.save() below — never set this directly elsewhere.
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0,
                                        validators=[MinValueValidator(0)])
-    payment_status = models.CharField(max_length=10, choices=PaymentStatus.choices,
+    payment_status = models.CharField(max_length=15, choices=PaymentStatus.choices,
                                        default=PaymentStatus.UNPAID)
     generated_by = models.ForeignKey(
         "cms_backendapp.Staff", on_delete=models.SET_NULL, null=True, blank=True,
@@ -153,11 +169,13 @@ class BillItem(models.Model):
         CONSULTATION = "CONSULTATION", "Consultation"
         MEDICINE = "MEDICINE", "Medicine"
         LAB_TEST = "LAB_TEST", "Lab test"
+        REGISTRATION = "REGISTRATION", "Registration"
+        PHARMACY = "PHARMACY", "Pharmacy"
         OTHER = "OTHER", "Other"
 
     bill_item_id = models.CharField(max_length=15, primary_key=True)
     bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name="items")
-    item_type = models.CharField(max_length=15, choices=ItemType.choices, default=ItemType.OTHER)
+    item_type = models.CharField(max_length=20, choices=ItemType.choices, default=ItemType.OTHER)
     # Traces this charge back to its origin record — a PrescriptionItem.item_id,
     # a LabTest.test_id, etc. Kept as a plain CharField (not an FK) since it can
     # point at rows in different tables/apps depending on item_type.
@@ -193,6 +211,7 @@ class Payment(models.Model):
                                        validators=[MinValueValidator(0.01)])
     payment_date = models.DateField()
     payment_method = models.CharField(max_length=10, choices=Method.choices, default=Method.CASH)
+    transaction_ref = models.CharField(max_length=50, blank=True, null=True)
     received_by = models.ForeignKey(
         "cms_backendapp.Staff", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="payments_received",

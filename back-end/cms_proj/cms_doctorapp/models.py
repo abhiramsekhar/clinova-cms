@@ -54,9 +54,13 @@ class ConsultationRecord(models.Model):
         related_name="consultation_records",
     )
     visit_date = models.DateField()
+    symptoms = models.TextField(blank=True, null=True)
     diagnosis = models.TextField(blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
+    vital_signs = models.JSONField(default=dict, blank=True)
+    is_completed = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "consultation_records"
@@ -78,10 +82,14 @@ class ConsultationRecord(models.Model):
 class Prescription(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
+        PARTIALLY_DISPENSED = "PARTIALLY_DISPENSED", "Partially Dispensed"
         DISPENSED = "DISPENSED", "Dispensed"
         CANCELLED = "CANCELLED", "Cancelled"
 
     prescription_id = models.CharField(max_length=15, primary_key=True)
+    consultation = models.ForeignKey(
+        ConsultationRecord, on_delete=models.SET_NULL, null=True, blank=True, related_name="prescriptions"
+    )
     patient = models.ForeignKey(
         "cms_recepapp.Patient", on_delete=models.PROTECT, related_name="prescriptions"
     )
@@ -91,7 +99,13 @@ class Prescription(models.Model):
         related_name="prescriptions",
     )
     date_issued = models.DateField()
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    status = models.CharField(max_length=25, choices=Status.choices, default=Status.PENDING)
+    dispensed_by = models.ForeignKey(
+        "cms_backendapp.Staff", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="prescriptions_dispensed"
+    )
+    dispensed_at = models.DateTimeField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -121,6 +135,8 @@ class PrescriptionItem(models.Model):
     dosage = models.CharField(max_length=50, blank=True, null=True)  # e.g. 1-0-1
     duration_days = models.IntegerField(blank=True, null=True, validators=[MinValueValidator(1)])
     instructions = models.TextField(blank=True, null=True)  # e.g. after food
+    quantity = models.IntegerField(default=1, validators=[MinValueValidator(1)])
+    frequency = models.CharField(max_length=50, blank=True, null=True)
 
     class Meta:
         db_table = "prescription_items"
@@ -143,8 +159,11 @@ class LabTest(models.Model):
     """The lab test *order* raised by a doctor. The result lives in cms_labapp.LabTestResult."""
     class Status(models.TextChoices):
         ORDERED = "ORDERED", "Ordered"
+        SAMPLE_COLLECTED = "SAMPLE_COLLECTED", "Sample Collected"
+        PROCESSING = "PROCESSING", "Processing"
         IN_PROGRESS = "IN_PROGRESS", "In progress"
         COMPLETED = "COMPLETED", "Completed"
+        CANCELLED = "CANCELLED", "Cancelled"
 
     test_id = models.CharField(max_length=15, primary_key=True)
     patient = models.ForeignKey(
@@ -159,7 +178,15 @@ class LabTest(models.Model):
         "cms_backendapp.LabTestCatalog", on_delete=models.PROTECT, related_name="lab_tests"
     )
     ordered_date = models.DateField()
-    status = models.CharField(max_length=15, choices=Status.choices, default=Status.ORDERED)
+    status = models.CharField(max_length=25, choices=Status.choices, default=Status.ORDERED)
+    priority = models.CharField(max_length=20, default="Routine")
+    technician = models.ForeignKey(
+        "cms_backendapp.Staff", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="assigned_lab_tests"
+    )
+    sample_collected_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
