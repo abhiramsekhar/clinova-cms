@@ -21,5 +21,8 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('cms_backendapp.urls')),
     path('api/', include('cms_recepapp.urls')),
+    path('api/', include('cms_doctorapp.urls')),
+    path('api/', include('cms_pharmapp.urls')),
+    path('api/', include('cms_labapp.urls')),
 ]
 

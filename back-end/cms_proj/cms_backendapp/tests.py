@@ -172,3 +172,155 @@ class AuthTests(APITestCase):
         resp_admin = view(req_admin)
         self.assertEqual(resp_admin.status_code, status.HTTP_200_OK)
         self.assertEqual(resp_admin.data["granted"], True)
+
+
+class AdminDomainTests(APITestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from cms_backendapp.models import Department, Setting, Notification, AuditLog
+
+        self.role_admin = Role.objects.create(role_id="ADMIN", role_name="Administrator")
+        self.role_doc = Role.objects.create(role_id="DOCTOR", role_name="Doctor")
+
+        self.staff_admin = Staff.objects.create(
+            staff_id="STF-ADM-01",
+            name="System Administrator",
+            email="admin@clinova.test",
+            role=self.role_admin,
+            is_active=True,
+        )
+        self.user_admin = User.objects.create(
+            user_id="USR-ADM-01",
+            username="superadmin",
+            role=self.role_admin,
+            staff=self.staff_admin,
+            is_active=True,
+        )
+        self.user_admin.set_password("Admin@123")
+        self.user_admin.save()
+
+        self.staff_doc = Staff.objects.create(
+            staff_id="STF-DOC-01",
+            name="Dr. Test",
+            email="doc@clinova.test",
+            role=self.role_doc,
+            is_active=True,
+        )
+        self.user_doc = User.objects.create(
+            user_id="USR-DOC-01",
+            username="docuser",
+            role=self.role_doc,
+            staff=self.staff_doc,
+            is_active=True,
+        )
+        self.user_doc.set_password("Doc@123")
+        self.user_doc.save()
+
+        self.dept = Department.objects.create(
+            department_id="DEPT-01",
+            name="Cardiology",
+            code="CARDIO",
+            default_fee=Decimal("600.00"),
+            is_active=True,
+        )
+
+        Setting.objects.create(setting_id="s1", key="hospital.name", value='"Clinova Care"')
+        Notification.objects.create(
+            notification_id="n1",
+            notification_type="SYSTEM",
+            title="System Alert",
+            message="Server upgraded",
+            target_role="ADMIN",
+            is_read=False,
+        )
+
+    def auth_headers(self, user):
+        token = RefreshToken.for_user(user).access_token
+        return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+    def test_user_list_reset_password_unlock(self):
+        headers = self.auth_headers(self.user_admin)
+
+        # List users
+        res = self.client.get("/api/users/", **headers)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        # Reset password
+        res_reset = self.client.post(f"/api/users/{self.user_doc.user_id}/reset-password/", {"password": "NewDocPassword@123"}, format="json", **headers)
+        self.assertEqual(res_reset.status_code, status.HTTP_200_OK)
+        self.user_doc.refresh_from_db()
+        self.assertTrue(self.user_doc.check_password("NewDocPassword@123"))
+
+        # Unlock user
+        res_unlock = self.client.post(f"/api/users/{self.user_doc.user_id}/unlock/", format="json", **headers)
+        self.assertEqual(res_unlock.status_code, status.HTTP_200_OK)
+
+    def test_staff_list_and_doctors_dropdown(self):
+        headers = self.auth_headers(self.user_admin)
+        res_docs = self.client.get("/api/staff/doctors/", **headers)
+        self.assertEqual(res_docs.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(s["id"] == "STF-DOC-01" for s in res_docs.data))
+
+    def test_department_crud_with_default_fee_in_paise(self):
+        headers = self.auth_headers(self.user_admin)
+
+        # Check defaultFee in paise
+        res = self.client.get("/api/departments/", **headers)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["results"][0]["defaultFee"], 60000)
+
+        # Create new department with fee in paise (75000 paise = ₹750)
+        payload = {
+            "name": "Neurology",
+            "code": "NEURO",
+            "defaultFee": 75000,
+        }
+        res_post = self.client.post("/api/departments/", payload, format="json", **headers)
+        self.assertEqual(res_post.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res_post.data["defaultFee"], 75000)
+
+    def test_settings_dict_and_patch(self):
+        headers = self.auth_headers(self.user_admin)
+
+        # GET settings
+        res = self.client.get("/api/settings/", **headers)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data.get("hospital.name"), '"Clinova Care"')
+
+        # PATCH settings
+        res_patch = self.client.patch("/api/settings/", {"hospital.name": "Clinova Hospital"}, format="json", **headers)
+        self.assertEqual(res_patch.status_code, status.HTTP_200_OK)
+
+    def test_dashboard_kpis_and_reports(self):
+        headers = self.auth_headers(self.user_admin)
+
+        res_dash = self.client.get("/api/dashboard/admin/", **headers)
+        self.assertEqual(res_dash.status_code, status.HTTP_200_OK)
+        self.assertIn("staffCount", res_dash.data)
+
+        res_rep = self.client.get("/api/reports/generate/?type=appointments", **headers)
+        self.assertEqual(res_rep.status_code, status.HTTP_200_OK)
+        self.assertIn("data", res_rep.data)
+
+    def test_notifications_lifecycle(self):
+        headers = self.auth_headers(self.user_admin)
+
+        res = self.client.get("/api/notifications/", **headers)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["count"], 1)
+
+        res_read = self.client.patch(f"/api/notifications/n1/read/", format="json", **headers)
+        self.assertEqual(res_read.status_code, status.HTTP_200_OK)
+        self.assertTrue(res_read.data["isRead"])
+
+    def test_admin_permissions(self):
+        headers_doc = self.auth_headers(self.user_doc)
+
+        # Doctor accessing /api/users/ -> 403
+        res = self.client.get("/api/users/", **headers_doc)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Anonymous -> 401
+        res_anon = self.client.get("/api/users/")
+        self.assertEqual(res_anon.status_code, status.HTTP_401_UNAUTHORIZED)
+

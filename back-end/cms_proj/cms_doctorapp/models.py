@@ -59,6 +59,7 @@ class ConsultationRecord(models.Model):
     notes = models.TextField(blank=True, null=True)
     vital_signs = models.JSONField(default=dict, blank=True)
     is_completed = models.BooleanField(default=True)
+    addendums = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

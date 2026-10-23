@@ -1,8 +1,8 @@
 # Project Progress & Implementation Status
 
 ## Current Phase: Phase 1 (Backend API)
-**Last Completed Step**: 1d-reception (Reception serializers, ViewSets, URLs under /api/, permissions, filters, money in paise, 14 passing tests)  
-**Next Step**: 1d-doctor (Resource ViewSets/serializers/urls for Doctor group)
+**Last Completed Step**: Step 1 (API tests for 1d groups: reception, doctor, pharmacy, lab, admin - 43 tests passing)  
+**Next Step**: Step 2 (seed_demo [--reset] verification)
 
 ---
 
@@ -51,6 +51,27 @@
 - **Routing**: Configured `cms_recepapp/urls.py` with DRF `DefaultRouter` and connected to `/api/` in `cms_proj/urls.py`.
 - **Automated Tests**: Implemented 14 tests in `cms_recepapp/tests.py` covering all reception operations, permissions, paise conversions, and ID mappings. Ran and verified: 14 passed (0 errors, 0 failures).
 
+### Step 1 (Completed): API tests for 1d groups (reception, doctor, pharmacy, lab, admin)
+- **Doctor Domain (`cms_doctorapp`)**:
+  - Implemented `DoctorSerializer`, `ConsultationRecordSerializer`, `PrescriptionSerializer`, `PrescriptionItemSerializer`, `LabOrderSerializer`.
+  - Built `DoctorViewSet`, `ConsultationViewSet` (get-or-create, save-draft, complete, addendum), `PrescriptionViewSet` (create with allergy check, cancel, dispense with FEFO batch deduction, StockLedgerEntry, bill/payment creation, reject), `LabOrderViewSet` (create, cancel, update-status, enter-result with critical range notifications).
+  - Wired URLs to `/api/` and added 5 automated tests in `cms_doctorapp/tests.py`.
+- **Pharmacy Domain (`cms_pharmapp`)**:
+  - Implemented `MedicineSerializer` (paise conversion, computed stockLevel), `SupplierSerializer`, `PurchaseOrderSerializer`, `StockLedgerEntrySerializer`.
+  - Built `MedicineViewSet` (toggle-active, restock, stock-alerts), `SupplierViewSet` (rates), `PurchaseOrderViewSet` (receive), `StockLedgerViewSet`.
+  - Wired URLs to `/api/` and added 5 automated tests in `cms_pharmapp/tests.py`.
+- **Lab Domain (`cms_labapp`)**:
+  - Implemented `LabCatalogSerializer` (paise conversion), `LabResultSerializer`.
+  - Built `LabCatalogViewSet`, `LabResultViewSet`.
+  - Wired URLs to `/api/` and added 3 automated tests in `cms_labapp/tests.py`.
+- **Admin Domain (`cms_backendapp`)**:
+  - Implemented `UserSerializer`, `StaffSerializer`, `DepartmentSerializer`, `SettingSerializer`, `AuditLogSerializer`, `NotificationSerializer`.
+  - Built `UserViewSet` (reset-password, unlock), `StaffViewSet` (doctors dropdown, deactivate), `DepartmentViewSet`, `SettingViewSet`, `AuditLogViewSet`, `NotificationViewSet` (read, mark-all-read), `DashboardViewSet` (admin, doctor, reception, pharmacy, lab KPIs), `ReportViewSet` (generate).
+  - Added 7 admin domain automated tests to `cms_backendapp/tests.py` (total 16 tests in cms_backendapp).
+- **Test Suite Verification**:
+  - Ran `manage.py test` across all apps: 43 tests executed and passed (0 errors, 0 failures).
+  - Validated list/create/retrieve/update for allowed roles, 403 for other roles, 401 unauthenticated, and money as integer paise.
+
 ---
 
 ## Architectural Decisions & Invariants
@@ -70,10 +91,7 @@
 ---
 
 ## Next Steps
-- **1d-doctor**: Resource ViewSets, serializers, and URLs for doctor domain (doctors, consultations, prescriptions, lab orders, clinical history).
-- **1d-pharmacy**: Pharmacy domain (medicines, dispensing, suppliers, purchase orders, stock).
-- **1d-lab**: Lab domain (catalog, tests, results).
-- **1d-admin**: Admin domain (users, staff, departments, settings, audit log, reports, notifications).
-- **1e**: Business logic endpoints (book-and-pay, dispense, enter-result, consultation lock, double-booking prevention).
-- **1g**: Comprehensive tests + `docs/smoke_test.md`.
+- **Step 2**: `seed_demo [--reset]`: Verify/run source of truth from `seed.js`, non-destructive by default, `--reset` clears only app tables, prints demo logins.
+- **Step 3**: Business rules with tests: appointment double-booking check with `select_for_update`, book-and-pay, consultation complete & lock + addendum, prescription FEFO dispense & stock ledger, lab order critical alert, IdSequence, AuditLog.
+- **Step 4**: `docs/smoke_test.md`: curl/PowerShell commands and live validation.
 

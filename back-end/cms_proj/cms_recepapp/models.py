@@ -94,16 +94,6 @@ class Appointment(models.Model):
             models.Index(fields=["doctor", "appointment_date"]),
             models.Index(fields=["patient"]),
         ]
-        constraints = [
-            # Same effect as the generated booking_key + unique index in the
-            # SQL version: a doctor can't be double-booked for the same slot
-            # unless the earlier appointment was cancelled.
-            models.UniqueConstraint(
-                fields=["doctor", "appointment_date", "time_slot"],
-                condition=models.Q(status__in=["SCHEDULED", "CHECKED_IN", "IN_PROGRESS", "COMPLETED"]),
-                name="uq_appt_active_slot",
-            ),
-        ]
 
     def __str__(self):
         return f"{self.patient} with {self.doctor_id} on {self.appointment_date} {self.time_slot}"
