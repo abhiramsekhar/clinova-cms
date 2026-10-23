@@ -1,0 +1,213 @@
+/* ============================================
+   CLINOVA HEALTHCARE — Layout
+   ============================================ */
+
+/* ── App Shell ── */
+.app {
+    display: flex;
+    min-height: 100vh;
+    min-height: 100dvh;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--navy-900);
+    color: var(--surface);
+    display: flex;
+    flex-direction: column;
+    z-index: var(--z-sticky);
+    overflow-y: auto;
+    overflow-x: hidden;
+    transform: translateX(-100%);
+    transition: transform var(--transition-base);
+}
+
+.sidebar.is-open {
+    transform: translateX(0);
+}
+
+.sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: calc(var(--z-sticky) - 1);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-base), visibility var(--transition-base);
+}
+
+.sidebar-overlay.is-visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* ── Header ── */
+.header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--header-height);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 var(--sp-4);
+    gap: var(--sp-3);
+    z-index: var(--z-sticky);
+}
+
+/* ── Main Content ── */
+.main {
+    flex: 1;
+    padding-top: var(--header-height);
+    min-width: 0;
+}
+
+.main__inner {
+    padding: var(--sp-6) var(--sp-4);
+    max-width: var(--content-max-width);
+    margin: 0 auto;
+}
+
+/* ── Page Header ── */
+.page-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    margin-bottom: var(--sp-6);
+}
+
+.page-header__info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+}
+
+.page-header__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}
+
+/* ── Content Grid ── */
+.grid {
+    display: grid;
+    gap: var(--sp-6);
+}
+
+.grid--2 {
+    grid-template-columns: 1fr;
+}
+
+.grid--3 {
+    grid-template-columns: 1fr;
+}
+
+.grid--4 {
+    grid-template-columns: 1fr;
+}
+
+/* ── Dashboard Layout ── */
+.dashboard-grid {
+    display: grid;
+    gap: var(--sp-6);
+    grid-template-columns: 1fr;
+}
+
+/* ── Stat Cards Row ── */
+.stat-row {
+    display: grid;
+    gap: var(--sp-4);
+    grid-template-columns: 1fr;
+}
+
+/* ── Split Content (e.g. consultation) ── */
+.split {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-6);
+}
+
+.split__aside {
+    width: 100%;
+}
+
+.split__main {
+    flex: 1;
+    min-width: 0;
+}
+
+/* ── Two-Column Form ── */
+.form-grid {
+    display: grid;
+    gap: var(--sp-4);
+    grid-template-columns: 1fr;
+}
+
+.form-grid--full {
+    grid-column: 1 / -1;
+}
+
+/* ── Toolbar Row ── */
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-4);
+}
+
+.toolbar__title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-right: auto;
+}
+
+/* ── Section ── */
+.section {
+    margin-bottom: var(--sp-8);
+}
+
+.section__title {
+    margin-bottom: var(--sp-4);
+}
+
+/* ── Container ── */
+.container {
+    width: 100%;
+    margin: 0 auto;
+    padding: 0 var(--sp-4);
+}
+
+/* ── Login Layout ── */
+.login-layout {
+    display: flex;
+    min-height: 100vh;
+    min-height: 100dvh;
+}
+
+.login-layout__visual {
+    display: none;
+}
+
+.login-layout__form {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--sp-6);
+}
+
+.login-form-wrapper {
+    width: 100%;
+    max-width: 420px;
+}

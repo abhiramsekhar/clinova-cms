@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" fill="none">
+  <!-- Clinova Healthcare Logo: Medical cross + ECG heartbeat line -->
+  <g>
+    <!-- Cross shape -->
+    <rect x="12" y="4" width="20" height="56" rx="4" fill="#02C39A"/>
+    <rect x="0" y="18" width="44" height="20" rx="4" fill="#02C39A"/>
+    <!-- ECG line over the cross -->
+    <polyline points="6,30 14,30 17,20 20,38 23,24 26,34 30,30 38,30"
+              stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="56" y="32" font-family="Inter, system-ui, sans-serif" font-size="26" font-weight="600" fill="#FFFFFF" letter-spacing="-0.5">Clinova</text>
+  <text x="56" y="52" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="400" fill="#D9ECEB" letter-spacing="1.5">Healthcare</text>
+</svg>
