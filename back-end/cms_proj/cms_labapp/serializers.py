@@ -15,6 +15,7 @@ from .models import LabTestResult
 class LabCatalogSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source="test_catalog_id", read_only=True)
     name = serializers.CharField(source="test_name")
+    testName = serializers.CharField(source="test_name", read_only=True)
     sampleType = serializers.CharField(source="sample_type", required=False, allow_null=True, allow_blank=True)
     turnaroundHrs = serializers.IntegerField(source="turnaround_hrs", default=4)
     price = serializers.SerializerMethodField()
@@ -25,6 +26,7 @@ class LabCatalogSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
+            "testName",
             "code",
             "category",
             "sampleType",

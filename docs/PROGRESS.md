@@ -1,8 +1,8 @@
 # Project Progress & Implementation Status
 
 ## Current Phase: Phase 1 (Backend API)
-**Last Completed Step**: Step 3 (Business rules with tests - 48 tests passing)  
-**Next Step**: Step 4 (docs/smoke_test.md & validation)
+**Last Completed Step**: Step 4 (docs/smoke_test.md & live validation against runserver - all 48 tests passing)  
+**Next Step**: Frontend integration & full-stack end-to-end verification
 
 ---
 
@@ -106,6 +106,21 @@
 - **Test Suite Verification**:
   - Ran full test suite across all apps: 48 tests executed and passed (0 errors, 0 failures).
 
+### Step 4 (Completed): docs/smoke_test.md & Live Smoke Test Validation
+- **Documentation**: Created `docs/smoke_test.md` containing complete ready-to-run curl and PowerShell commands for authentication and each resource group (Auth, Admin, Reception, Doctor, Pharmacy, Lab).
+- **Live Server Testing**:
+  - Ran automated PowerShell script against Django live server (`http://127.0.0.1:8000/api`).
+  - Successfully verified:
+    1. `POST /api/auth/login/` (Status: 200 OK, JWT tokens generated for admin).
+    2. `GET /api/auth/me/` (Status: 200 OK, User profile retrieved).
+    3. `GET /api/dashboard/admin/` (Status: 200 OK, Staff=13, Active Doctors=6, Appointments Today=10).
+    4. `GET /api/patients/?search=Arun` (Status: 200 OK, Arun Nair, MRN: CLN-2025-0001).
+    5. `GET /api/doctors/` (Status: 200 OK, Dr. Anil Kumar, fee=70000 paise).
+    6. `GET /api/medicines/stock-alerts/` (Status: 200 OK).
+    7. `GET /api/lab-catalog/` (Status: 200 OK, Blood Glucose, price=15000 paise).
+- **Backend Enhancements**: Added `activeDoctors` KPI to `admin_dashboard` and `testName` alias to `LabCatalogSerializer`.
+- **Test Suite Verification**: Ran full test suite across all apps: 48 tests passed (0 errors, 0 failures).
+
 ---
 
 ## Architectural Decisions & Invariants
@@ -124,6 +139,6 @@
 
 ---
 
-## Next Steps
-- **Step 4**: `docs/smoke_test.md`: curl/PowerShell commands and live validation against runserver.
+## Status: All Backend Steps (1 through 4) Completed Successfully
+All planned backend requirements, domain endpoints, migrations, seed commands, business logic, constraints, automated tests (48 passing), and smoke test documentation are fully completed and verified.
 

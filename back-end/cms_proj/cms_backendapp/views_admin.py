@@ -260,6 +260,7 @@ class DashboardViewSet(viewsets.ViewSet):
 
         today = datetime.date.today()
         staff_count = Staff.objects.filter(is_active=True).count()
+        active_doctors = Staff.objects.filter(role__role_id="DOCTOR", is_active=True).count()
         today_appts = Appointment.objects.filter(appointment_date=today).count()
         pending_labs = LabTest.objects.filter(status__in=["ORDERED", "SAMPLE_COLLECTED", "PROCESSING"]).count()
         low_stock = Medicine.objects.filter(is_active=True, stock_quantity__lte=10).count()
@@ -267,6 +268,7 @@ class DashboardViewSet(viewsets.ViewSet):
 
         return Response({
             "staffCount": staff_count,
+            "activeDoctors": active_doctors,
             "todayAppointments": today_appts,
             "pendingLabs": pending_labs,
             "lowStockMedicines": low_stock,
