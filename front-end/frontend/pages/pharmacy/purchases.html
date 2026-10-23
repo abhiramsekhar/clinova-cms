@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Purchase Orders — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="./pharmacy.css">
+  <link rel="stylesheet" href="./pharmacy-chrome.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div id="ph-print-frame"></div>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Modal, Toast } from '../../components/ui.js';
+    import { pharmacy } from '../../api/pharmacy.js';
+    import { db } from '../../data/db.js';
+
+    let poTable;
+    let currentUser;
+    let newPoItems = [];  // { medicineId, name, quantityOrdered, unitCost, lineTotal } (unitCost = supplier's configured rate)
+
+    const MED_NOT_FOUND_MSG = 'Medicine not found in inventory. Please add/configure the medicine before purchasing stock.';
+    const NO_RATES_MSG = 'No supplier rates configured. Please configure medicine rates for this supplier before creating a Purchase Order.';
+    const NO_MED_RATE_MSG = 'No purchase rate configured for this medicine from this supplier. Configure the supplier rate first.';
+
+    /* ── Inline validation helpers ── */
+    function setFE(elOrId, msg) {
+      const el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
+      if (!el) return;
+      const group = el.closest?.('.form-group') || el.parentElement;
+      if (!group) return;
+      group.classList.toggle('has-error', !!msg);
+      const err = group.querySelector('.field-error');
+      if (err) err.textContent = msg || '';
+    }
+
+    initShell(['PHARMACIST', 'ADMIN'], (session) => {
+      currentUser = session;
+      const page = getPageContent();
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Purchase Orders</h1>
+          </div>
+          <div class="page-header__actions">
+            <button class="btn btn--primary" id="btn-create-po">
+              <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-plus"></use></svg>
+              Create PO
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--sp-6);">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="form-group" style="margin:0;">
+              <select class="form-input" id="filter-status">
+                <option value="">All Statuses</option>
+                <option value="ORDERED">Ordered</option>
+                <option value="PARTIALLY_RECEIVED">Partially Received</option>
+                <option value="RECEIVED">Received</option>
+                <option value="DRAFT">Draft</option>
+              </select>
+            </div>
+          </div>
+          <div id="po-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'id',         label: 'PO ID',    sortable: true,  render: r => `<strong>${r.id.split('-').pop().toUpperCase()}</strong>` },
+        { key: 'orderDate',  label: 'Date',      sortable: true,  render: r => Format.date(r.orderDate || r.createdAt) },
+        { key: 'supplierId', label: 'Supplier',  sortable: true,  render: r => { try { return db.getById('suppliers', r.supplierId).name; } catch { return '—'; } } },
+        { key: 'items',      label: 'Items',     sortable: false, render: r => r.items.length + ' med(s)' },
+        { key: 'totalAmount',label: 'Total',     sortable: true,  render: r => Format.money(r.totalAmount || 0) },
+        { key: 'status',     label: 'Status',    sortable: true,  render: r => Badge.status(r.status) },
+        { key: 'actions',    label: '', width: '190px', render: r => {
+          const canReceive = r.status === 'ORDERED' || r.status === 'PARTIALLY_RECEIVED';
+          return `
+            ${canReceive ? `<button class="btn btn--primary btn--sm btn-receive" data-id="${r.id}" style="margin-right:3px;">Receive Stock</button>` : ''}
+            <button class="btn btn--secondary btn--sm btn-view" data-id="${r.id}" style="margin-right:3px;">View</button>
+            <button class="btn btn--secondary btn--sm btn-print-po" data-id="${r.id}" title="Print PO">🖨</button>
+          `;
+        }}
+      ];
+
+      poTable = new DataTable('po-table', columns, [], { defaultSort: 'orderDate' });
+      poTable.sortAsc = false;
+      loadPOs();
+
+      document.getElementById('filter-status').addEventListener('change', loadPOs);
+      document.getElementById('btn-create-po').addEventListener('click', () => showCreatePO());
+
+      document.getElementById('po-table').addEventListener('click', e => {
+        const receiveBtn = e.target.closest('.btn-receive');
+        if (receiveBtn) return showReceiveStock(receiveBtn.dataset.id);
+
+        const viewBtn = e.target.closest('.btn-view');
+        if (viewBtn) return showViewPO(viewBtn.dataset.id);
+
+        const printBtn = e.target.closest('.btn-print-po');
+        if (printBtn) return printPO(printBtn.dataset.id);
+      });
+
+      // Handle redirects from Stock Alerts / Inventory (?medId=…) and "medicine not found" notices
+      const params = new URLSearchParams(window.location.search);
+      const prefillMed = params.get('medId');
+      const notice = params.get('notice');
+      if (notice === 'medicine-not-found') {
+        Toast.show(MED_NOT_FOUND_MSG, 'error');
+      } else if (prefillMed) {
+        const med = pharmacy.listMedicines().find(m => m.id === prefillMed);
+        if (!med) Toast.show(MED_NOT_FOUND_MSG, 'error');
+        else if (!med.isActive) Toast.show(`${med.name} is inactive. Activate it in Inventory before purchasing stock.`, 'error');
+        else showCreatePO(prefillMed);
+      }
+      if (notice || prefillMed) window.history.replaceState({}, document.title, window.location.pathname);
+    });
+
+    function loadPOs() {
+      const status = document.getElementById('filter-status').value;
+      let pos = pharmacy.listPurchases();
+      if (status) pos = pos.filter(p => p.status === status);
+      poTable.updateData(pos);
+    }
+
+    /* ── Create PO (Task 5: supplier rates, auto-fill, total bill) ── */
+    function showCreatePO(prefillMedId = null) {
+      newPoItems = [];
+      const suppliers = pharmacy.listSuppliers();
+
+      const supOptions = suppliers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      function renderItems() {
+        const list = document.getElementById('po-item-list');
+        const totalEl = document.getElementById('po-total-bar');
+        if (!list) return;
+
+        if (newPoItems.length === 0) {
+          list.innerHTML = `<div class="text-caption" style="padding: var(--sp-2) 0;">No medicines added to PO.</div>`;
+          if (totalEl) totalEl.style.display = 'none';
+          return;
+        }
+
+        const total = newPoItems.reduce((s, i) => s + i.lineTotal, 0);
+        list.innerHTML = newPoItems.map((item, i) => `
+          <div class="po-item-row">
+            <div>
+              <strong>${item.name}</strong>
+              <span class="text-caption" style="margin-left:8px;">Qty: ${item.quantityOrdered} × ${Format.money(item.unitCost)} = <strong>${Format.money(item.lineTotal)}</strong></span>
+            </div>
+            <button class="btn btn--danger btn--sm btn--icon" type="button" onclick="window._removePoItem(${i})">
+              <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-x"></use></svg>
+            </button>
+          </div>
+        `).join('');
+
+        if (totalEl) {
+          totalEl.style.display = 'flex';
+          totalEl.querySelector('#po-total-val').textContent = Format.money(total);
+        }
+      }
+
+      window._removePoItem = (i) => {
+        newPoItems.splice(i, 1);
+        renderItems();
+        // re-validate item list
+        const listErr = document.getElementById('po-items-error');
+        if (listErr) listErr.textContent = newPoItems.length ? '' : 'Add at least one medicine.';
+      };
+
+      const content = `
+        <div class="form-group" style="margin-bottom: var(--sp-3);">
+          <label class="form-group__label">Supplier *</label>
+          <select class="form-input" id="po-supplier">
+            <option value="">Select Supplier…</option>${supOptions}
+          </select>
+          <div class="field-error" id="po-supplier-error" aria-live="polite"></div>
+        </div>
+
+        <div class="po-notice" id="po-notice" role="status" aria-live="polite" style="display:none;"></div>
+
+        <div class="form-group" style="margin-bottom:var(--sp-3);">
+          <label class="form-group__label">Order Date</label>
+          <input type="date" class="form-input" id="po-date" value="${todayStr}">
+        </div>
+
+        <div style="background:var(--bg-muted); padding:var(--sp-3); border-radius:var(--radius-md); margin-bottom:var(--sp-4);">
+          <div class="text-body-sm" style="font-weight:600; margin-bottom:var(--sp-2);">Add Medicine</div>
+          <div style="display:grid; grid-template-columns: 2fr 1fr 1fr auto; gap:var(--sp-3); align-items:end;">
+            <div class="form-group" style="margin:0;">
+              <label class="form-group__label">Medicine</label>
+              <select class="form-input" id="po-med">
+                <option value="">Select supplier first…</option>
+              </select>
+              <div class="field-error" id="po-med-error" aria-live="polite"></div>
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label class="form-group__label">Qty</label>
+              <input type="number" class="form-input" id="po-qty" min="1" value="10">
+              <div class="field-error" id="po-qty-error" aria-live="polite"></div>
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label class="form-group__label">Rate/Unit (₹)</label>
+              <input type="text" class="form-input" id="po-price" placeholder="Auto-filled" readonly tabindex="-1" aria-readonly="true" title="Set in Suppliers → Rates" style="background:var(--bg-muted);">
+              <div class="field-error" id="po-price-error" aria-live="polite"></div>
+            </div>
+            <button class="btn btn--secondary" type="button" id="po-add-item">Add</button>
+          </div>
+        </div>
+
+        <div id="po-item-list"></div>
+        <div class="po-total-bar" id="po-total-bar" style="display:none;">
+          <span>Total Bill</span>
+          <span id="po-total-val">₹0.00</span>
+        </div>
+        <div class="field-error" id="po-items-error" aria-live="polite" style="margin-top: var(--sp-2);"></div>
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="po-cancel">Cancel</button>
+        <button class="btn btn--primary" id="po-submit">Create PO</button>
+      `;
+
+      const m = Modal.show({ title: 'Create Purchase Order', content, size: 'lg', actions });
+      renderItems();
+
+      const supEl = document.getElementById('po-supplier');
+      const medEl = document.getElementById('po-med');
+      const priceEl = document.getElementById('po-price');
+      const noticeEl = document.getElementById('po-notice');
+      const RATES_LINK = ' <a href="suppliers.html" class="text-link">Configure supplier rates</a>';
+
+      function showNotice(msg, withLink = false) {
+        noticeEl.innerHTML = msg ? msg + (withLink ? RATES_LINK : '') : '';
+        noticeEl.style.display = msg ? '' : 'none';
+        noticeEl.style.marginBottom = msg ? 'var(--sp-3)' : '';
+      }
+
+      /* Medicines offered = ONLY those with a configured rate for the selected supplier */
+      function loadSupplierMedicines(supId) {
+        priceEl.value = '';
+        showNotice('');
+        if (!supId) {
+          medEl.disabled = false;
+          medEl.innerHTML = '<option value="">Select supplier first…</option>';
+          return;
+        }
+        const rates = pharmacy.getSupplierRates(supId)
+          .filter(r => r.isActive)
+          .sort((x, y) => x.medicineName.localeCompare(y.medicineName));
+        if (rates.length === 0) {
+          medEl.disabled = true;
+          medEl.innerHTML = '<option value="">No rates configured</option>';
+          showNotice(NO_RATES_MSG, true);
+          return;
+        }
+        medEl.disabled = false;
+        const sizeOf = Object.fromEntries(pharmacy.listMedicines().map(x => [x.id, x.unitSize]));
+        medEl.innerHTML = '<option value="">Select medicine…</option>' +
+          rates.map(r => `<option value="${r.medicineId}">${r.medicineName}${sizeOf[r.medicineId] ? ' — ' + sizeOf[r.medicineId] : ''}</option>`).join('');
+      }
+
+      /* Supplier change → reload that supplier's rated medicines */
+      supEl.addEventListener('change', () => {
+        const supId = supEl.value;
+        setFE(supEl, supId ? '' : 'Supplier is required');
+
+        // Items already added belong to the previous supplier's rates
+        if (newPoItems.length > 0 && newPoItems[0].supplierId !== supId) {
+          if (!confirm('Changing supplier will reset the item list. Continue?')) {
+            supEl.value = newPoItems[0].supplierId;
+            setFE(supEl, '');
+            return;
+          }
+          newPoItems = [];
+          renderItems();
+        }
+
+        loadSupplierMedicines(supId);
+      });
+
+      /* Medicine change → auto-fill the supplier's configured rate (read-only) */
+      medEl.addEventListener('change', () => {
+        const medId = medEl.value;
+        const rate = medId ? pharmacy.getSupplierRate(supEl.value, medId) : null;
+        priceEl.value = rate ? (rate / 100).toFixed(2) : '';
+        if (medId && !rate) showNotice(NO_MED_RATE_MSG, true);
+        else showNotice('');
+        setFE(medEl, medId ? '' : 'Select a medicine');
+      });
+
+      /* Pre-fill when arriving from Stock Alerts / Inventory (?medId=…) */
+      if (typeof prefillMedId === 'string') {
+        const preMed = pharmacy.listMedicines().find(x => x.id === prefillMedId);
+        const preName = preMed ? preMed.name : 'this medicine';
+        const offering = suppliers.filter(sp =>
+          pharmacy.getSupplierRates(sp.id).some(r => r.medicineId === prefillMedId && r.isActive));
+        if (offering.length === 1) {
+          supEl.value = offering[0].id;
+          loadSupplierMedicines(offering[0].id);
+          medEl.value = prefillMedId;
+          medEl.dispatchEvent(new Event('change'));
+        } else if (offering.length > 1) {
+          showNotice(`Select the supplier to buy ${preName} from. Each supplier has its own configured rate.`);
+        } else {
+          showNotice(`No supplier has a configured purchase rate for ${preName}. Configure the supplier rate first.`, true);
+        }
+      }
+
+      document.getElementById('po-cancel').addEventListener('click', m.close);
+
+      /* Add item — the rate is looked up from the supplier configuration, never read from the input */
+      document.getElementById('po-add-item').addEventListener('click', () => {
+        const supId = supEl.value;
+        const medId = medEl.value;
+        const qtyStr = document.getElementById('po-qty').value.trim();
+        let ok = true;
+
+        if (!supId) { setFE(supEl, 'Supplier is required'); ok = false; }
+        if (!medId) { document.getElementById('po-med-error').textContent = 'Select a medicine'; ok = false; }
+        else document.getElementById('po-med-error').textContent = '';
+
+        const qty = Number(qtyStr);
+        if (!qtyStr || !Number.isInteger(qty) || qty <= 0) {
+          document.getElementById('po-qty-error').textContent = 'Quantity must be a whole number greater than 0';
+          ok = false;
+        } else document.getElementById('po-qty-error').textContent = '';
+
+        const unitCost = (supId && medId) ? pharmacy.getSupplierRate(supId, medId) : null;
+        if (supId && medId && !unitCost) {
+          document.getElementById('po-price-error').textContent = NO_MED_RATE_MSG;
+          ok = false;
+        } else document.getElementById('po-price-error').textContent = '';
+
+        if (!ok) return;
+
+        const med = pharmacy.listMedicines().find(x => x.id === medId);
+        if (!med) { Toast.show(MED_NOT_FOUND_MSG, 'error'); return; }
+
+        const existing = newPoItems.findIndex(i => i.medicineId === medId);
+        if (existing >= 0) {
+          newPoItems[existing].quantityOrdered += qty;
+          newPoItems[existing].unitCost = unitCost;
+          newPoItems[existing].lineTotal = newPoItems[existing].quantityOrdered * unitCost;
+        } else {
+          newPoItems.push({
+            medicineId: med.id,
+            name: med.name,
+            quantityOrdered: qty,
+            unitCost,
+            lineTotal: qty * unitCost,
+            supplierId: supId
+          });
+        }
+        renderItems();
+        medEl.value = '';
+        document.getElementById('po-qty').value = '10';
+        priceEl.value = '';
+        showNotice('');
+        document.getElementById('po-items-error').textContent = '';
+      });
+
+      /* Submit PO — only medicine + quantity are sent; the API applies the supplier's configured rate */
+      document.getElementById('po-submit').addEventListener('click', () => {
+        const supplierId = supEl.value;
+        const orderDate = document.getElementById('po-date').value;
+        let ok = true;
+
+        if (!supplierId) {
+          setFE(supEl, 'Supplier is required');
+          ok = false;
+        }
+        if (newPoItems.length === 0) {
+          document.getElementById('po-items-error').textContent = 'Add at least one medicine.';
+          ok = false;
+        }
+        if (!ok) return;
+
+        try {
+          pharmacy.createPurchaseOrder({
+            supplierId,
+            items: newPoItems.map(i => ({ medicineId: i.medicineId, quantityOrdered: i.quantityOrdered })),
+            orderDate: orderDate || new Date().toISOString().split('T')[0]
+          }, currentUser.staffId);
+
+          Toast.show('Purchase Order created successfully.');
+          m.close();
+          loadPOs();
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } catch (err) {
+          if (err.code === 'RATE_NOT_CONFIGURED') showNotice(err.message, true);
+          Toast.show(err.message, 'error');
+        }
+      });
+    }
+
+    /* ── View PO ── */
+    function showViewPO(id) {
+      const po = db.getById('purchaseOrders', id);
+      let sup;
+      try { sup = db.getById('suppliers', po.supplierId); } catch { sup = { name: '—' }; }
+
+      const rows = po.items.map(item => {
+        let medName = item.name || '';
+        try { if (!medName) medName = db.getById('medicines', item.medicineId).name; } catch {}
+        const lineTotal = (item.unitCost || 0) * (item.quantityOrdered || 0);
+        return `
+          <tr>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border);">${medName}</td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:center;">${item.quantityOrdered}</td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:center;">${item.quantityReceived || 0}</td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">${Format.money(item.unitCost || 0)}</td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">${Format.money(lineTotal)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const total = po.totalAmount || po.items.reduce((s, i) => s + (i.unitCost || 0) * (i.quantityOrdered || 0), 0);
+
+      const content = `
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-3); margin-bottom:var(--sp-4);">
+          <div><div class="text-caption">Supplier</div><div><strong>${sup.name}</strong></div></div>
+          <div><div class="text-caption">Order Date</div><div>${Format.date(po.orderDate || po.createdAt)}</div></div>
+          <div><div class="text-caption">Status</div><div>${Badge.status(po.status)}</div></div>
+          <div><div class="text-caption">Expected Date</div><div>${po.expectedDate ? Format.date(po.expectedDate) : '—'}</div></div>
+        </div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Medicine</th>
+                <th style="text-align:center;">Ordered</th>
+                <th style="text-align:center;">Received</th>
+                <th style="text-align:right;">Rate</th>
+                <th style="text-align:right;">Line Total</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+              <tr>
+                <th colspan="4" style="padding:var(--sp-2); text-align:right; border-top:2px solid var(--border);">Total Amount:</th>
+                <th style="padding:var(--sp-2); text-align:right; border-top:2px solid var(--border);">${Format.money(total)}</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        ${po.notes ? `<div style="margin-top:var(--sp-3);"><strong>Notes:</strong> ${po.notes}</div>` : ''}
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="view-close">Close</button>
+        <button class="btn btn--secondary" id="view-print">🖨 Print PO</button>
+      `;
+
+      const mv = Modal.show({ title: `PO Details — ${id.split('-').pop().toUpperCase()}`, content, size: 'lg', actions });
+      document.getElementById('view-close').addEventListener('click', mv.close);
+      document.getElementById('view-print').addEventListener('click', () => { mv.close(); printPO(id); });
+    }
+
+    /* ── Receive Stock ── */
+    function showReceiveStock(id) {
+      const po = db.getById('purchaseOrders', id);
+      let sup;
+      try { sup = db.getById('suppliers', po.supplierId); } catch { sup = { name: '—' }; }
+
+      let rows = '';
+      po.items.forEach((item, i) => {
+        let medName = item.name || '';
+        try { if (!medName) medName = db.getById('medicines', item.medicineId).name; } catch {}
+        const pendingQty = (item.quantityOrdered || 0) - (item.quantityReceived || 0);
+        rows += `
+          <tr>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border);">
+              <strong>${medName}</strong><br>
+              <span class="text-caption">Ordered: ${item.quantityOrdered} | Received: ${item.quantityReceived || 0} | Pending: ${pendingQty}</span>
+              <input type="hidden" name="medId_${i}" value="${item.medicineId}">
+            </td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border);">
+              <div class="form-group" style="margin:0;">
+                <input type="number" class="form-input" name="qty_${i}" max="${pendingQty}" min="0" value="${pendingQty > 0 ? '' : 0}" ${pendingQty === 0 ? 'disabled' : ''} placeholder="Qty">
+                <div class="field-error" id="recv-qty-err-${i}" aria-live="polite"></div>
+              </div>
+            </td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border);">
+              <div class="form-group" style="margin:0;">
+                <input type="date" class="form-input" name="exp_${i}" ${pendingQty === 0 ? 'disabled' : ''} min="${new Date().toISOString().split('T')[0]}">
+                <div class="field-error" id="recv-exp-err-${i}" aria-live="polite"></div>
+              </div>
+            </td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border);">
+              <div class="form-group" style="margin:0;">
+                <input type="text" class="form-input" name="batch_${i}" ${pendingQty === 0 ? 'disabled' : ''} placeholder="e.g. B2026X01" autocomplete="off">
+                <div class="field-error" id="recv-batch-err-${i}" aria-live="polite"></div>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      const content = `
+        <div style="margin-bottom:var(--sp-4);">
+          <div class="text-caption">Supplier</div>
+          <div class="text-body"><strong>${sup.name}</strong></div>
+        </div>
+        <form id="recv-form">
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Medicine</th>
+                  <th style="width:110px;">Receive Qty</th>
+                  <th style="width:160px;">Expiry Date</th>
+                  <th style="width:130px;">Batch No *</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </form>
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="recv-cancel">Cancel</button>
+        <button class="btn btn--primary" id="recv-submit">Process Receipt</button>
+        <button class="btn btn--secondary" id="recv-print-btn" style="display:none;">🖨 Print Receipt</button>
+      `;
+
+      const m = Modal.show({ title: 'Receive Stock', content, size: 'lg', actions });
+      document.getElementById('recv-cancel').addEventListener('click', m.close);
+
+      document.getElementById('recv-form').addEventListener('submit', e => e.preventDefault());
+
+      document.getElementById('recv-submit').addEventListener('click', () => {
+        const f = document.getElementById('recv-form');
+        const receivedItems = [];
+        const today = new Date().toISOString().split('T')[0];
+        let ok = true;
+
+        po.items.forEach((_, i) => {
+          const qtyEl = f[`qty_${i}`];
+          if (!qtyEl || qtyEl.disabled) return;
+          const qty = parseInt(qtyEl.value);
+          const expEl = f[`exp_${i}`];
+          if (!qty || qty <= 0) return; // skip 0 qty
+
+          const batchEl = f[`batch_${i}`];
+          const pending = (po.items[i].quantityOrdered || 0) - (po.items[i].quantityReceived || 0);
+          let lineOk = true;
+          const mark = (errId, el, msg) => {
+            document.getElementById(errId).textContent = msg;
+            el.closest?.('.form-group')?.classList.toggle('has-error', !!msg);
+            if (msg) lineOk = false;
+          };
+
+          mark(`recv-qty-err-${i}`, qtyEl,
+            String(qtyEl.value).trim() !== String(qty) ? 'Enter a whole number'
+              : qty > pending ? `Only ${pending} pending` : '');
+          mark(`recv-exp-err-${i}`, expEl,
+            !expEl.value ? 'Expiry date required'
+              : expEl.value <= today ? 'Expiry must be in the future' : '');
+          mark(`recv-batch-err-${i}`, batchEl, batchEl.value.trim() ? '' : 'Batch number required');
+
+          if (!lineOk) { ok = false; return; }
+          receivedItems.push({
+            medicineId: f[`medId_${i}`].value,
+            quantity: qty,
+            expiryDate: expEl.value,
+            batchNumber: batchEl.value.trim()
+          });
+        });
+
+        if (!ok) return;
+        if (receivedItems.length === 0) return Toast.show('Enter at least one quantity to receive.', 'error');
+
+        try {
+          pharmacy.receivePurchaseOrder(id, receivedItems, currentUser.staffId);
+          Toast.show('Stock received successfully.');
+          loadPOs();
+
+          const printBtn = document.getElementById('recv-print-btn');
+          if (printBtn) {
+            printBtn.style.display = '';
+            printBtn.onclick = () => { m.close(); printStockReceipt(id, receivedItems); };
+          }
+          document.getElementById('recv-submit').disabled = true;
+        } catch (err) {
+          Toast.show(err.message, 'error');
+        }
+      });
+    }
+
+    /* ── Print: Purchase Order ── */
+    function printPO(id) {
+      const po = db.getById('purchaseOrders', id);
+      let sup;
+      try { sup = db.getById('suppliers', po.supplierId); } catch { sup = { name: '—' }; }
+      const total = po.totalAmount || po.items.reduce((s, i) => s + (i.unitCost || 0) * (i.quantityOrdered || 0), 0);
+
+      const rows = po.items.map(item => {
+        let medName = item.name || '';
+        try { if (!medName) medName = db.getById('medicines', item.medicineId).name; } catch {}
+        const lineTotal = (item.unitCost || 0) * (item.quantityOrdered || 0);
+        return `<tr>
+          <td>${medName}</td>
+          <td style="text-align:center;">${item.quantityOrdered}</td>
+          <td style="text-align:right;">${Format.money(item.unitCost || 0)}</td>
+          <td style="text-align:right;">${Format.money(lineTotal)}</td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('ph-print-frame').innerHTML = `
+        <div class="print-header">
+          <div>
+            <div class="print-clinic-name">Clinova Healthcare</div>
+            <div class="print-doc-title">Purchase Order</div>
+          </div>
+          <div style="text-align:right;">
+            <div><strong>PO #:</strong> ${id.split('-').pop().toUpperCase()}</div>
+            <div><strong>Date:</strong> ${Format.date(po.orderDate || po.createdAt)}</div>
+          </div>
+        </div>
+        <div class="print-meta">
+          <div><strong>Supplier:</strong> ${sup.name}</div>
+          <div><strong>Contact:</strong> ${sup.contactPerson || ''}</div>
+          <div><strong>Status:</strong> ${po.status}</div>
+          ${po.expectedDate ? `<div><strong>Expected:</strong> ${Format.date(po.expectedDate)}</div>` : ''}
+          ${po.notes ? `<div><strong>Notes:</strong> ${po.notes}</div>` : ''}
+        </div>
+        <table>
+          <thead><tr><th>Medicine</th><th>Qty</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Total</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700;">Grand Total</td><td style="text-align:right;font-weight:700;">${Format.money(total)}</td></tr></tfoot>
+        </table>
+        <div class="print-footer">Clinova Healthcare — This is a computer-generated Purchase Order.</div>
+      `;
+      window.print();
+    }
+
+    /* ── Print: Stock Receipt (from receive) ── */
+    function printStockReceipt(poId, receivedItems) {
+      const po = db.getById('purchaseOrders', poId);
+      let sup;
+      try { sup = db.getById('suppliers', po.supplierId); } catch { sup = { name: '—' }; }
+
+      const rows = receivedItems.map(r => {
+        let medName = '';
+        try { medName = db.getById('medicines', r.medicineId).name; } catch {}
+        return `<tr><td>${medName}</td><td style="text-align:center;">${r.quantity}</td><td>${r.batchNumber || 'Auto'}</td><td>${r.expiryDate}</td></tr>`;
+      }).join('');
+
+      document.getElementById('ph-print-frame').innerHTML = `
+        <div class="print-header">
+          <div>
+            <div class="print-clinic-name">Clinova Healthcare</div>
+            <div class="print-doc-title">Stock Receipt</div>
+          </div>
+          <div style="text-align:right;">
+            <div><strong>PO Ref:</strong> ${poId.split('-').pop().toUpperCase()}</div>
+            <div><strong>Date:</strong> ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })}</div>
+          </div>
+        </div>
+        <div class="print-meta">
+          <div><strong>Supplier:</strong> ${sup.name}</div>
+        </div>
+        <table>
+          <thead><tr><th>Medicine</th><th>Qty Received</th><th>Batch No</th><th>Expiry</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="print-footer">Clinova Healthcare — Stock receipt acknowledged.</div>
+      `;
+      window.print();
+    }
+  </script>
+  <script type="module" src="./pharmacy-shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,370 @@
+/* ============================================
+   CLINOVA HEALTHCARE — Forms
+   ============================================ */
+
+/* ── Form Group ── */
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+}
+
+.form-group__label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+.form-group__required {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.form-group__helper {
+    font-size: 0.75rem;
+    color: var(--muted);
+}
+
+.form-group__error {
+    font-size: 0.75rem;
+    color: var(--danger);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+/* ── Inputs ── */
+.form-input,
+.form-select,
+.form-textarea {
+    width: 100%;
+    padding: 10px var(--sp-3);
+    font-size: 0.9375rem;
+    line-height: 1.4;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    min-height: 44px;
+}
+
+.form-input:hover,
+.form-select:hover,
+.form-textarea:hover {
+    border-color: var(--border-strong);
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+    outline: none;
+    border-color: var(--teal-600);
+    box-shadow: 0 0 0 3px rgba(22, 140, 140, 0.1);
+}
+
+.form-input::placeholder,
+.form-textarea::placeholder {
+    color: var(--muted-light);
+}
+
+/* Error state */
+.form-group.has-error .form-input,
+.form-group.has-error .form-select,
+.form-group.has-error .form-textarea {
+    border-color: var(--danger);
+}
+
+.form-group.has-error .form-input:focus,
+.form-group.has-error .form-select:focus,
+.form-group.has-error .form-textarea:focus {
+    box-shadow: 0 0 0 3px rgba(194, 65, 65, 0.1);
+}
+
+/* Disabled */
+.form-input:disabled,
+.form-select:disabled,
+.form-textarea:disabled {
+    background: var(--bg);
+    color: var(--muted);
+    cursor: not-allowed;
+}
+
+/* ── Select ── */
+.form-select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: var(--sp-10);
+}
+
+/* ── Textarea ── */
+.form-textarea {
+    min-height: 100px;
+    resize: vertical;
+}
+
+/* ── Checkbox & Radio ── */
+.form-check {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    cursor: pointer;
+    font-size: 0.875rem;
+    min-height: 44px;
+}
+
+.form-check__input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--navy-900);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+/* ── Toggle / Switch ── */
+.form-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    cursor: pointer;
+    font-size: 0.875rem;
+    min-height: 44px;
+}
+
+.form-switch__track {
+    width: 40px;
+    height: 22px;
+    background: var(--border-strong);
+    border-radius: var(--radius-full);
+    position: relative;
+    transition: background var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.form-switch__track::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--surface);
+    border-radius: 50%;
+    transition: transform var(--transition-fast);
+    box-shadow: var(--shadow-xs);
+}
+
+.form-switch__input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.form-switch__input:checked+.form-switch__track {
+    background: var(--navy-900);
+}
+
+.form-switch__input:checked+.form-switch__track::after {
+    transform: translateX(18px);
+}
+
+.form-switch__input:focus-visible+.form-switch__track {
+    box-shadow: var(--focus-ring);
+}
+
+/* ── Password Toggle ── */
+.form-password {
+    position: relative;
+}
+
+.form-password .form-input {
+    padding-right: 44px;
+}
+
+.form-password__toggle {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    transition: color var(--transition-fast);
+}
+
+.form-password__toggle:hover {
+    color: var(--text);
+}
+
+/* ── Input Group (with icon or prefix) ── */
+.form-input-group {
+    position: relative;
+}
+
+.form-input-group__prefix {
+    position: absolute;
+    left: var(--sp-3);
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 0.875rem;
+    pointer-events: none;
+}
+
+.form-input-group__prefix+.form-input {
+    padding-left: 36px;
+}
+
+.form-input-group__suffix {
+    position: absolute;
+    right: var(--sp-3);
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 0.8125rem;
+}
+
+/* ── Date input ── */
+.form-input[type="date"] {
+    min-height: 44px;
+}
+
+/* Ensure 16px on mobile to prevent iOS zoom */
+@media (max-width: 639px) {
+
+    .form-input,
+    .form-select,
+    .form-textarea {
+        font-size: 1rem;
+    }
+}
+
+/* ── Form Actions (sticky bottom bar on mobile) ── */
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--sp-3);
+    padding-top: var(--sp-6);
+    border-top: 1px solid var(--border);
+    margin-top: var(--sp-6);
+}
+
+@media (max-width: 639px) {
+    .form-actions {
+        position: sticky;
+        bottom: 0;
+        background: var(--surface);
+        padding: var(--sp-4);
+        margin: var(--sp-6) calc(-1 * var(--sp-4)) 0;
+        border-top: 1px solid var(--border);
+        box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.06);
+        z-index: var(--z-base);
+    }
+}
+
+/* ── Form Banner ── */
+.form-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: var(--sp-4);
+}
+
+.form-banner--success {
+    background: var(--success-light);
+    color: var(--success);
+    border: 1px solid var(--success-border);
+}
+
+.form-banner--error {
+    background: var(--danger-light);
+    color: var(--danger);
+    border: 1px solid var(--danger-border);
+}
+
+/* ── Password Strength ── */
+.password-strength {
+    display: flex;
+    gap: var(--sp-1);
+    margin-top: var(--sp-1);
+}
+
+.password-strength__bar {
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    border-radius: var(--radius-full);
+    transition: background var(--transition-fast);
+}
+
+.password-strength--weak .password-strength__bar:nth-child(1) {
+    background: var(--danger);
+}
+
+.password-strength--fair .password-strength__bar:nth-child(-n+2) {
+    background: var(--warning);
+}
+
+.password-strength--good .password-strength__bar:nth-child(-n+3) {
+    background: var(--info);
+}
+
+.password-strength--strong .password-strength__bar {
+    background: var(--success);
+}
+
+.password-strength__label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-top: 2px;
+}
+
+/* ── Autocomplete Dropdown ── */
+.autocomplete {
+    position: relative;
+}
+
+.autocomplete__dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    z-index: var(--z-dropdown);
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.autocomplete__item {
+    padding: var(--sp-2) var(--sp-3);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.autocomplete__item:hover,
+.autocomplete__item.is-focused {
+    background: var(--hover-bg);
+}
+
+.autocomplete__item--empty {
+    color: var(--muted);
+    cursor: default;
+}

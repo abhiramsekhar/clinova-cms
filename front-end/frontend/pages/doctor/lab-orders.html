@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Lab Orders — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Modal } from '../../components/ui.js';
+    import { formatReferenceRange, laboratory } from '../../api/laboratory.js';
+    import { db } from '../../data/db.js';
+
+    let labTable;
+    let currentUser;
+
+    initShell(['DOCTOR'], (session) => {
+      currentUser = session;
+      const page = getPageContent();
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">My Lab Orders</h1>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--sp-6);">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="form-group" style="margin:0;">
+              <select class="form-input" id="filter-status">
+                <option value="">All Statuses</option>
+                <option value="ORDERED">Ordered</option>
+                <option value="SAMPLE_COLLECTED">Sample Collected</option>
+                <option value="PROCESSING">Processing</option>
+                <option value="COMPLETED">Completed</option>
+              </select>
+            </div>
+          </div>
+          <div id="labs-table"></div>
+        </div>
+      `;
+
+      const escapeHtml = (str) => {
+        if (str == null) return '';
+        return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+      };
+      const safeGet = (coll, id) => {
+        try { return db.getById(coll, id); } catch { return null; }
+      };
+
+      // Setup Table
+      const columns = [
+        { key: 'createdAt', label: 'Date', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'patientId', label: 'Patient', sortable: true, render: r => {
+          const p = safeGet('patients', r.patientId);
+          return p ? `<strong>${escapeHtml(p.name)}</strong>` : `<span style="color:var(--muted)">Patient unavailable</span>`;
+        }},
+        { key: 'testId', label: 'Test', sortable: true, render: r => {
+          const t = safeGet('labCatalog', r.testId);
+          return t ? escapeHtml(t.name) : 'Unknown Test';
+        } },
+        { key: 'priority', label: 'Priority', sortable: true, render: r => Badge.priority(r.priority) },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) },
+        { key: 'actions', label: '', width: '80px', render: r => `
+          <button class="btn btn--secondary btn--sm btn-view" data-id="${r.id}">View</button>
+        `}
+      ];
+
+      labTable = new DataTable('labs-table', columns, [], { defaultSort: 'createdAt' });
+      labTable.sortAsc = false;
+      loadLabs();
+
+      // Filters
+      document.getElementById('filter-status').addEventListener('change', loadLabs);
+
+      // Event Delegation
+      document.getElementById('labs-table').addEventListener('click', (e) => {
+        const viewBtn = e.target.closest('.btn-view');
+        if (viewBtn) showLab(viewBtn.dataset.id);
+      });
+    });
+
+    function loadLabs() {
+      const status = document.getElementById('filter-status').value;
+      const data = laboratory.listOrders(status ? { status, doctorId: currentUser.staffId } : { doctorId: currentUser.staffId });
+      labTable.updateData(data);
+    }
+
+    function showLab(id) {
+      const escapeHtml = (str) => {
+        if (str == null) return '';
+        return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+      };
+      const safeGet = (coll, id) => {
+        try { return db.getById(coll, id); } catch { return null; }
+      };
+      
+      const order = safeGet('labOrders', id);
+      if (!order) return;
+      const test = safeGet('labCatalog', order.testId) || { name: 'Unknown Test', parameters: [] };
+      const p = safeGet('patients', order.patientId) || { name: 'Unknown Patient', mrn: '-' };
+      
+      let resHtml = '';
+      if (order.status === 'COMPLETED' && order.results) {
+        resHtml = `
+          <div class="panel-title" style="margin-top:var(--sp-4);">Results</div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead><tr><th>Parameter</th><th>Value</th><th>Ref. Range</th></tr></thead>
+            <tbody>
+              ${order.results.map(r => `
+                <tr>
+                  <td>${escapeHtml(r.parameter)}</td>
+                  <td style="${r.isAbnormal ? 'color:var(--danger);font-weight:bold;' : ''}">${escapeHtml(r.value)} ${escapeHtml(r.unit)}</td>
+                  <td class="text-caption">${escapeHtml(formatReferenceRange(test.parameters.find(param => param.name === r.parameter)) || r.referenceRange || 'Not specified')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+          <div class="text-caption" style="margin-top:var(--sp-2);">Verified by Tech ID: ${escapeHtml(order.technicianId)} at ${escapeHtml(Format.datetime(order.completedAt))}</div>
+        `;
+      } else {
+        resHtml = `<div class="text-caption" style="margin-top:var(--sp-4);">Results are not yet available. Status: ${escapeHtml(order.status.replace('_',' '))}</div>`;
+      }
+
+      const content = `
+        <div style="margin-bottom:var(--sp-4); display:flex; justify-content:space-between;">
+          <div>
+            <div class="text-caption">Patient</div>
+            <div class="text-body"><strong>${escapeHtml(p.name)}</strong> (${escapeHtml(p.mrn)})</div>
+          </div>
+          <div>
+            <div class="text-caption">Test</div>
+            <div class="text-body"><strong>${escapeHtml(test.name)}</strong></div>
+          </div>
+        </div>
+        ${order.isCritical ? `
+          <div class="allergy-banner" style="background:var(--danger);color:white;">
+            <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-alert-triangle"></use></svg>
+            <div>CRITICAL RESULTS - Immediate attention required</div>
+          </div>
+        ` : ''}
+        ${resHtml}
+      `;
+
+      Modal.show({ title: `Lab Order Details`, content, size: 'md' });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,217 @@
+/* ============================================================
+   CLINOVA HEALTHCARE — "Aqua Glass" theme (iOS / visionOS feel)
+   Loaded LAST on every page. Remove the <link> to revert fully.
+   Screen-only: print styles and the A4 prescription window are untouched.
+   ============================================================ */
+@media screen {
+
+  /* ── 1. Tokens (override only; names unchanged so nothing breaks) ── */
+  :root {
+    /* Ink */
+    --text:           #0E2A31;
+    --text-secondary: #46646A;
+    --muted:          #6C8489;
+    --border:         rgba(14, 60, 72, 0.10);
+    --border-strong:  rgba(14, 60, 72, 0.22);
+    --border-light:   rgba(14, 60, 72, 0.06);
+    --hover-bg:       rgba(2, 168, 150, 0.08);
+    --bg-hover:       rgba(2, 168, 150, 0.08);
+    --bg:             #E8F2F2;
+
+    /* Shape: softer, Apple-like radii */
+    --radius-sm: 10px;
+    --radius-md: 16px;
+    --radius-lg: 22px;
+
+    /* Teal-tinted shadows */
+    --shadow-xs: 0 1px 2px rgba(5, 80, 100, 0.06);
+    --shadow-sm: 0 2px 8px rgba(5, 80, 100, 0.08);
+    --shadow-md: 0 8px 24px rgba(5, 80, 100, 0.10);
+    --shadow-lg: 0 18px 48px rgba(5, 80, 100, 0.16);
+    --focus-ring: 0 0 0 4px rgba(2, 195, 154, 0.28), 0 0 0 1px #02A896;
+
+    /* Glass tokens */
+    --glass-bg:        rgba(255, 255, 255, 0.58);
+    --glass-bg-strong: rgba(255, 255, 255, 0.78);
+    --glass-bg-solid:  rgba(255, 255, 255, 0.92);
+    --glass-border:    rgba(255, 255, 255, 0.72);
+    --glass-blur:      blur(22px) saturate(175%);
+    --glass-blur-sm:   blur(12px) saturate(150%);
+    --glass-shadow:    0 8px 32px rgba(5, 80, 100, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    --accent-grad:     linear-gradient(180deg, #14A3B5 0%, #05708F 100%);
+  }
+
+  /* ── 2. Ambient background (this is what the glass blurs) ── */
+  body {
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(900px 600px at 10% 6%,  rgba(2, 195, 154, 0.30), transparent 62%),
+      radial-gradient(800px 560px at 92% 10%, rgba(96, 165, 240, 0.26), transparent 62%),
+      radial-gradient(900px 700px at 72% 96%, rgba(2, 128, 144, 0.24), transparent 62%),
+      radial-gradient(700px 520px at 4% 92%,  rgba(184, 160, 245, 0.18), transparent 62%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.011em;
+  }
+  h1, h2, h3, .page-header h1, .page-title { letter-spacing: -0.022em; }
+
+  /* ── 3. Chrome: sidebar + header ── */
+  .sidebar {
+    background: linear-gradient(180deg, rgba(5, 102, 141, 0.80) 0%, rgba(2, 110, 125, 0.76) 100%);
+    -webkit-backdrop-filter: var(--glass-blur);
+            backdrop-filter: var(--glass-blur);
+    border-right: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 8px 0 32px rgba(5, 80, 100, 0.12);
+  }
+  .sidebar__brand { border-bottom-color: rgba(255, 255, 255, 0.16); }
+  .nav-item {
+    margin: 2px 10px;
+    border-radius: 12px;
+    color: rgba(255, 255, 255, 0.88);
+  }
+  .nav-item:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+  .nav-item.is-active {
+    background: rgba(255, 255, 255, 0.90);
+    color: #05668D;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(0, 40, 60, 0.18), inset 0 1px 0 #fff;
+  }
+  .nav-item.is-active::before { display: none; }
+
+  .header {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+            backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--glass-border);
+    box-shadow: 0 1px 0 rgba(14, 60, 72, 0.05), 0 8px 24px rgba(5, 80, 100, 0.06);
+  }
+  .sidebar-overlay, .modal-overlay {
+    background: rgba(8, 40, 52, 0.38);
+    -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
+  }
+
+  /* ── 4. Surfaces ── */
+  .card, .stat-card {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+            backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+  .stat-card:hover { box-shadow: var(--shadow-md), inset 0 1px 0 #fff; transform: translateY(-1px); }
+  .card__header { border-bottom-color: var(--border); }
+
+  .modal {
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+            backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-lg), inset 0 1px 0 #fff;
+  }
+  .toast {
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-blur);
+            backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-lg), inset 0 1px 0 #fff;
+  }
+  /* Dropdowns live inside .header, which already has backdrop-filter. A nested
+     backdrop-filter cannot see the page behind the header, so blur does nothing
+     and page content shows through. Make them (almost) opaque instead. */
+  .dropdown__menu {
+    background: #FBFEFE;
+    -webkit-backdrop-filter: none;
+            backdrop-filter: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+  }
+  .dropdown__menu .dropdown__item { align-items: flex-start; text-align: left; }
+  .dropdown__item:hover, .dropdown__item.is-selected { background: var(--hover-bg); }
+  .notification-item.is-unread { background: rgba(2, 195, 154, 0.12); }
+
+  /* Tables: readable first — lighter blur, higher opacity */
+  .table-container {
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-blur-sm);
+            backdrop-filter: var(--glass-blur-sm);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+  .data-table thead, .data-table th { background: rgba(5, 102, 141, 0.06); }
+  .data-table td, .data-table th { border-bottom-color: var(--border); }
+  .data-table tbody tr:hover { background: rgba(2, 168, 150, 0.07); }
+
+  /* Page-level <style> blocks that hard-code white */
+  body .timeline-card, body .rx-item { background: var(--glass-bg-strong); }
+
+  /* ── 5. Controls ── */
+  .form-input, .form-select, .form-textarea, .search-bar__input {
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 1px 2px rgba(14, 60, 72, 0.05);
+  }
+  .form-input:focus, .form-select:focus, .form-textarea:focus, .search-bar__input:focus {
+    background: #fff;
+    border-color: #02A896;
+    box-shadow: var(--focus-ring);
+    outline: none;
+  }
+  .search-bar { border-radius: var(--radius-md); }
+
+  .btn { border-radius: 12px; font-weight: 600; letter-spacing: -0.005em; }
+  .btn--primary {
+    background: var(--accent-grad);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    color: #fff;
+    box-shadow: 0 6px 16px rgba(5, 112, 143, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  }
+  .btn--primary:hover { filter: brightness(1.07); box-shadow: 0 8px 22px rgba(5, 112, 143, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.4); }
+  .btn--primary:active { transform: translateY(1px); filter: brightness(0.97); }
+  .btn--secondary {
+    background: rgba(255, 255, 255, 0.70);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-xs), inset 0 1px 0 #fff;
+  }
+  .btn--secondary:hover { background: rgba(255, 255, 255, 0.92); }
+  .btn--ghost:hover { background: var(--hover-bg); }
+
+  .badge { border-radius: var(--radius-full); backdrop-filter: none; }
+  .tabs { border-bottom-color: var(--border); }
+
+  /* ── 6. Login page ── */
+  body .login-layout__form { background: transparent; }
+  body .login-form-wrapper {
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+            backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg), inset 0 1px 0 #fff;
+  }
+
+  /* ── 7. Scrollbars (subtle, Apple-style) ── */
+  * { scrollbar-width: thin; scrollbar-color: rgba(14, 60, 72, 0.25) transparent; }
+}
+
+/* ── 8. Fallbacks: no blur support / user asks for less transparency ── */
+@media screen and (prefers-reduced-transparency: reduce) {
+  :root { --glass-bg: #F6FAFA; --glass-bg-strong: #FFFFFF; }
+  .sidebar { background: #05668D; }
+  .header, .card, .stat-card, .modal, .toast, .table-container, .login-form-wrapper {
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  @media screen {
+    :root { --glass-bg: rgba(255, 255, 255, 0.94); --glass-bg-strong: rgba(255, 255, 255, 0.98); }
+    .sidebar { background: #05668D; }
+  }
+}
+@media screen and (prefers-contrast: more) {
+  :root { --glass-bg: rgba(255, 255, 255, 0.95); --border: rgba(14, 60, 72, 0.35); }
+}

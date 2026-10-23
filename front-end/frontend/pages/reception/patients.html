@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Patients — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Toast, Modal } from '../../components/ui.js';
+    import { patients } from '../../api/patients.js';
+    import { validateName, validatePhone, validateDob, validateGender, validateAddress, validateAllergies, validateBloodGroup, validatePatientForm, ageFromDob, MIN_YEAR } from '../../core/validators.js';
+
+    let patientTable;
+
+    initShell(['RECEPTIONIST', 'ADMIN'], (session) => {
+      const page = getPageContent();
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Patients</h1>
+          </div>
+          <div class="page-header__actions">
+            <button class="btn btn--primary" id="btn-register">
+              <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-plus"></use></svg>
+              Register Patient
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--sp-6);">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="patient-search" placeholder="Search by name, MRN, phone...">
+            </div>
+          </div>
+          <div id="patients-table"></div>
+        </div>
+      `;
+
+      // Setup Table
+      const columns = [
+        { key: 'mrn', label: 'MRN', sortable: true },
+        { key: 'name', label: 'Patient Name', sortable: true, render: r => `<strong>${r.name}</strong><br><span class="text-caption">${r.gender}, ${Format.age(r.dateOfBirth)} yrs</span>` },
+        { key: 'phone', label: 'Phone', sortable: false },
+        { key: 'createdAt', label: 'Registered', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'actions', label: '', width: '80px', render: r => `
+          <a href="../shared/patient-profile.html?id=${r.id}" class="btn btn--ghost btn--sm">View</a>
+        `}
+      ];
+
+      patientTable = new DataTable('patients-table', columns, patients.list(), {
+        searchInputId: 'patient-search',
+        defaultSort: 'createdAt',
+        emptyTitle: 'No patients found',
+        emptyIcon: 'icon-users',
+        emptyAction: `<button class="btn btn--primary" onclick="document.getElementById('btn-register').click()">Register New Patient</button>`
+      });
+      patientTable.sortAsc = false; // Sort descending by default
+      patientTable._sortData();
+      patientTable.render();
+
+      // Register Button
+      document.getElementById('btn-register').addEventListener('click', () => {
+        showRegisterModal(session.userId);
+      });
+    });
+
+    function showRegisterModal(userId) {
+      const formHtml = `
+        <form id="register-form" novalidate style="display:flex;flex-direction:column;gap:var(--sp-4);">
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4);">
+            <div class="form-group">
+              <label class="form-group__label">Full Name *</label>
+              <input type="text" class="form-input" name="name" maxlength="60" autocomplete="off">
+              <small class="form-group__error" data-err="name"></small>
+            </div>
+            <div class="form-group">
+              <label class="form-group__label">Phone Number *</label>
+              <input type="tel" class="form-input" name="phone" maxlength="17" inputmode="tel" placeholder="e.g. 9876543210" autocomplete="off">
+              <small class="form-group__error" data-err="phone"></small>
+            </div>
+          </div>
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4);">
+            <div class="form-group">
+              <label class="form-group__label">Date of Birth *</label>
+              <input type="date" class="form-input" name="dob" id="reg-dob" min="${MIN_YEAR}-01-01" max="${new Date().toISOString().split('T')[0]}">
+              <small class="form-group__error" data-err="dateOfBirth"></small>
+            </div>
+            <div class="form-group">
+              <label class="form-group__label">Gender *</label>
+              <select class="form-input" name="gender">
+                <option value="">Select...</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+              </select>
+              <small class="form-group__error" data-err="gender"></small>
+            </div>
+          </div>
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4);">
+            <div class="form-group">
+              <label class="form-group__label">Address</label>
+              <input type="text" class="form-input" name="address" maxlength="200" autocomplete="off">
+              <small class="form-group__error" data-err="address"></small>
+            </div>
+            <div class="form-group">
+              <label class="form-group__label">Allergies (comma separated)</label>
+              <input type="text" class="form-input" name="allergies" placeholder="e.g. Penicillin, Peanuts" autocomplete="off">
+              <small class="form-group__error" data-err="allergies"></small>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label">Blood Group</label>
+            <select class="form-input" name="bloodGroup">
+              <option value="">Unknown</option>
+              <option value="A+">A+</option><option value="A-">A-</option>
+              <option value="B+">B+</option><option value="B-">B-</option>
+              <option value="AB+">AB+</option><option value="AB-">AB-</option>
+              <option value="O+">O+</option><option value="O-">O-</option>
+            </select>
+            <small class="form-group__error" data-err="bloodGroup"></small>
+          </div>
+          
+          <div id="guardian-section" style="display:none; padding:var(--sp-4); background:var(--bg); border-radius:var(--radius-md); border:1px solid var(--border);">
+            <div class="text-card-title" style="margin-bottom:var(--sp-3); font-size:0.875rem;">Guardian Details (Required for under 18)</div>
+            <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4);">
+              <div class="form-group">
+                <label class="form-group__label">Guardian Name *</label>
+                <input type="text" class="form-input" name="guardianName" id="reg-guardian-name" maxlength="60" autocomplete="off">
+                <small class="form-group__error" data-err="guardianName"></small>
+              </div>
+              <div class="form-group">
+                <label class="form-group__label">Guardian Phone *</label>
+                <input type="tel" class="form-input" name="guardianPhone" id="reg-guardian-phone" maxlength="17" inputmode="tel" placeholder="e.g. 9876543210" autocomplete="off">
+                <small class="form-group__error" data-err="guardianPhone"></small>
+              </div>
+            </div>
+          </div>
+        </form>
+      `;
+
+      const actionsHtml = `
+        <button class="btn btn--secondary" id="reg-cancel">Cancel</button>
+        <button class="btn btn--primary" id="reg-submit" form="register-form">Register Patient</button>
+      `;
+
+      const m = Modal.show({ title: 'Register New Patient', content: formHtml, size: 'md', actions: actionsHtml });
+
+      document.getElementById('reg-cancel').addEventListener('click', m.close);
+
+      const form = document.getElementById('register-form');
+
+      // ---- inline error helpers ----
+      const showError = (field, msg) => {
+        const slot = form.querySelector(`[data-err="${field}"]`);
+        if (!slot) return;
+        slot.textContent = msg || '';
+        const group = slot.closest('.form-group');
+        if (group) group.classList.toggle('has-error', !!msg);
+      };
+      const clearErrors = () => form.querySelectorAll('[data-err]').forEach(el => showError(el.dataset.err, ''));
+
+      // ---- guardian logic ----
+      const dobInput = document.getElementById('reg-dob');
+      const gSection = document.getElementById('guardian-section');
+      const gName = document.getElementById('reg-guardian-name');
+      const gPhone = document.getElementById('reg-guardian-phone');
+
+      const updateGuardian = () => {
+        const dob = validateDob(dobInput.value);
+        const isMinor = dob.valid && ageFromDob(dob.value) < 18;
+        gSection.style.display = isMinor ? 'block' : 'none';
+        gName.required = isMinor;
+        gPhone.required = isMinor;
+        if (!isMinor) { showError('guardianName', ''); showError('guardianPhone', ''); }
+      };
+
+      // ---- per-field validators (used on blur / change) ----
+      const fieldChecks = {
+        name: () => validateName(form.name.value, 'Full name'),
+        phone: () => validatePhone(form.phone.value),
+        dateOfBirth: () => validateDob(dobInput.value),
+        gender: () => validateGender(form.gender.value),
+        address: () => validateAddress(form.address.value),
+        allergies: () => validateAllergies(form.allergies.value),
+        bloodGroup: () => validateBloodGroup(form.bloodGroup.value),
+        guardianName: () => validateName(gName.value, 'Guardian name'),
+        guardianPhone: () => validatePhone(gPhone.value, 'Guardian phone')
+      };
+      const inputByField = {
+        name: form.name, phone: form.phone, dateOfBirth: dobInput, gender: form.gender,
+        address: form.address, allergies: form.allergies, bloodGroup: form.bloodGroup,
+        guardianName: gName, guardianPhone: gPhone
+      };
+      Object.entries(inputByField).forEach(([field, el]) => {
+        el.addEventListener('blur', () => {
+          if (field.startsWith('guardian') && gSection.style.display === 'none') return;
+          showError(field, fieldChecks[field]().error);
+        });
+        el.addEventListener('input', () => showError(field, ''));
+      });
+
+      // Block characters that can never be valid while typing
+      const stripName = (el) => { el.value = el.value.replace(/[^\p{L}\p{M}\s.'’-]/gu, ''); };
+      const stripPhone = (el) => { el.value = el.value.replace(/[^\d+\s()-]/g, ''); };
+      form.name.addEventListener('input', () => stripName(form.name));
+      gName.addEventListener('input', () => stripName(gName));
+      form.phone.addEventListener('input', () => stripPhone(form.phone));
+      gPhone.addEventListener('input', () => stripPhone(gPhone));
+
+      dobInput.addEventListener('change', () => {
+        showError('dateOfBirth', validateDob(dobInput.value).error);
+        updateGuardian();
+      });
+      dobInput.addEventListener('input', updateGuardian);
+
+      // Submit
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        clearErrors();
+        updateGuardian();
+
+        const result = validatePatientForm({
+          name: form.name.value,
+          phone: form.phone.value,
+          dateOfBirth: dobInput.value,
+          gender: form.gender.value,
+          address: form.address.value,
+          allergies: form.allergies.value,
+          bloodGroup: form.bloodGroup.value,
+          guardianName: gName.value,
+          guardianPhone: gPhone.value
+        });
+
+        if (!result.valid) {
+          Object.entries(result.errors).forEach(([field, msg]) => showError(field, msg));
+          const firstBad = Object.keys(result.errors).map(f => inputByField[f]).find(Boolean);
+          if (firstBad) firstBad.focus();
+          return;
+        }
+
+        const data = {
+          name: result.data.name,
+          phone: result.data.phone,
+          dateOfBirth: result.data.dateOfBirth,
+          gender: result.data.gender,
+          address: result.data.address,
+          allergies: result.data.allergies,
+          bloodGroup: result.data.bloodGroup,
+          guardianName: result.data.guardianName,
+          guardianPhone: result.data.guardianPhone
+        };
+
+        // 1) Check details + duplicates BEFORE asking for money
+        try {
+          patients.precheck(data);
+        } catch (err) {
+          Toast.show(err.message, 'error');
+          return;
+        }
+
+        // 2) Move to the payment step
+        m.close();
+        showPaymentModal(data, userId);
+      });
+    }
+
+    function showPaymentModal(data, userId) {
+      const fee = patients.getRegistrationFee();
+      const content = `
+        <p>Registration fee for <strong>${data.name}</strong></p>
+        <h2 style="margin:var(--sp-3) 0;">${Format.money(fee)}</h2>
+        <label class="form-group__label">Payment method *</label>
+        <select class="form-input" id="reg-pay-method">
+          <option value="CASH">Cash</option>
+          <option value="CARD">Card</option>
+          <option value="UPI">UPI</option>
+        </select>`;
+      const actions = `
+        <button class="btn btn--secondary" id="pay-cancel">Cancel</button>
+        <button class="btn btn--primary" id="pay-confirm">Collect &amp; Register</button>`;
+
+      const pm = Modal.show({ title: 'Registration Fee', content, size: 'sm', actions });
+      document.getElementById('pay-cancel').addEventListener('click', pm.close);
+
+      document.getElementById('pay-confirm').addEventListener('click', () => {
+        const btn = document.getElementById('pay-confirm');
+        btn.disabled = true;
+        try {
+          const method = document.getElementById('reg-pay-method').value;
+          const { patient } = patients.registerAndPay(data, { method }, userId);
+          Toast.show(`Fee paid. ${patient.name} registered with MRN ${patient.mrn}.`);
+          patientTable.updateData(patients.list());
+          pm.close();
+          showBookPrompt(patient);
+        } catch (err) {
+          Toast.show(err.message, 'error');
+          btn.disabled = false;
+        }
+      });
+    }
+
+    function showBookPrompt(patient) {
+      const content = `
+        <p><strong>${patient.name}</strong> is registered.</p>
+        <h2 style="margin:var(--sp-3) 0;">MRN: ${patient.mrn}</h2>
+        <p>Do you want to book an appointment now? If not, you can book later from the Appointments page.</p>`;
+      const actions = `
+        <button class="btn btn--secondary" id="book-later">Book Later</button>
+        <button class="btn btn--primary" id="book-now">Book Appointment Now</button>`;
+
+      const bm = Modal.show({ title: 'Registration Complete', content, size: 'sm', actions });
+      document.getElementById('book-later').addEventListener('click', bm.close);
+      document.getElementById('book-now').addEventListener('click', () => {
+        window.location.href = 'appointments.html?patientId=' + encodeURIComponent(patient.id);
+      });
+    }
+  </script>
+</body>
+</html>

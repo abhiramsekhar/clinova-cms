@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab Catalog — Clinova</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Modal, Toast, Format } from '../../components/ui.js';
+    import { admin } from '../../api/admin.js';
+    import { laboratory } from '../../api/laboratory.js';
+    import { db } from '../../data/db.js';
+
+    let table;
+
+    initShell(['ADMIN'], () => {
+      const page = getPageContent();
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Lab Catalog Pricing</h1>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="cat-search" placeholder="Search tests...">
+            </div>
+          </div>
+          <div id="cat-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'code', label: 'Code', sortable: true, render: r => `<strong>${r.code}</strong>` },
+        { key: 'name', label: 'Test Name', sortable: true },
+        { key: 'category', label: 'Category', sortable: true },
+        { key: 'price', label: 'Price', sortable: true, render: r => Format.money(r.price) },
+        { key: 'parameters', label: 'Parameters (Ref. Range)', sortable: false, render: r => {
+          if (!r.parameters || !r.parameters.length) return '-';
+          return `<ul style="margin:0; padding-left:16px; font-size:0.875rem;">${r.parameters.map(p => {
+             let range = '';
+             if (p.refMin !== null && p.refMax !== null) range = ` (${p.refMin} - ${p.refMax} ${p.unit})`;
+             else if (p.refMin !== null) range = ` (&gt;${p.refMin} ${p.unit})`;
+             else if (p.refMax !== null) range = ` (&lt;${p.refMax} ${p.unit})`;
+             return `<li>${p.name} <span class="text-caption">${range}</span></li>`;
+          }).join('')}</ul>`;
+        }},
+        { key: 'isActive', label: 'Status', sortable: true, render: r => r.isActive ? '<span class="badge badge--success">Active</span>' : '<span class="badge badge--danger">Inactive</span>' },
+        { key: 'actions', label: '', width: '100px', render: r => `<button class="btn btn--secondary btn--sm btn-edit" data-id="${r.id}">Edit Price</button>` }
+      ];
+
+      table = new DataTable('cat-table', columns, laboratory.getCatalog(), { searchInputId: 'cat-search', defaultSort: 'name' });
+
+      document.getElementById('cat-table').addEventListener('click', e => {
+        const id = e.target.dataset.id;
+        if (e.target.closest('.btn-edit')) {
+          const test = db.getById('labCatalog', id);
+          const m = Modal.show({
+            title: `Edit Price: ${test.name}`,
+            content: `
+              <form id="price-form">
+                <div class="form-group">
+                  <label class="form-label">Price (₹)</label>
+                  <input type="number" class="form-input" name="price" value="${test.price / 100}" required>
+                </div>
+              </form>
+            `,
+            actions: `<button class="btn btn--secondary" id="price-cancel">Cancel</button><button class="btn btn--primary" form="price-form">Save</button>`
+          });
+
+          document.getElementById('price-cancel').addEventListener('click', m.close);
+          document.getElementById('price-form').addEventListener('submit', ev => {
+            ev.preventDefault();
+            admin.updateLabPrice(id, parseInt(ev.target.price.value) * 100);
+            Toast.show('Price updated');
+            table.updateData(laboratory.getCatalog());
+            m.close();
+          });
+        }
+      });
+    });
+  </script>
+</body>
+</html>

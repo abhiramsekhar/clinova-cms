@@ -1,0 +1,47 @@
+/**
+ * Clinova Healthcare — Pharmacy page chrome (Pharmacy pages only)
+ *
+ * Linked ONLY from frontend/pages/pharmacy/*.html, so nothing here reaches other modules.
+ * Shared components (topbar.js, sidebar.js, app-shell.js) and shared CSS are not modified.
+ */
+
+/* Global topbar search ("Search patients, appointments…") is not used by the pharmacy module.
+   Page-level searches (medicines, suppliers, alerts…) are separate elements and stay visible. */
+#global-search {
+  display: none !important;
+}
+
+@media (min-width: 1024px) {
+  /* Shared CSS hides the hamburger on desktop for every role except Doctor; show it here. */
+  body #topbar .hamburger {
+    display: flex;
+  }
+
+  /* Desktop collapse (toggled by pharmacy-shell.js) — mirrors the existing Doctor collapsed sidebar. */
+  body.ph-sidebar-collapsed .sidebar { width: 72px; }
+  body.ph-sidebar-collapsed .header { left: 72px; }
+  body.ph-sidebar-collapsed .main { margin-left: 72px; }
+
+  body.ph-sidebar-collapsed .sidebar__brand-text,
+  body.ph-sidebar-collapsed .nav-group__label,
+  body.ph-sidebar-collapsed .nav-item span,
+  body.ph-sidebar-collapsed .sidebar__footer span {
+    display: none;
+  }
+
+  body.ph-sidebar-collapsed .nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  body.ph-sidebar-collapsed .nav-item .icon,
+  body.ph-sidebar-collapsed .sidebar__footer .icon {
+    margin-right: 0;
+  }
+  body.ph-sidebar-collapsed .sidebar__footer { justify-content: center; }
+  body.ph-sidebar-collapsed .sidebar__brand {
+    padding: var(--sp-4) 0;
+    justify-content: center;
+  }
+  body.ph-sidebar-collapsed .sidebar__logo { margin: 0; }
+}

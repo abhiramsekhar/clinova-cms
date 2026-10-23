@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dev Tools — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+  <style>
+    .devtools { max-width: 800px; margin: 0 auto; padding: var(--sp-8) var(--sp-4); }
+    .test-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: var(--sp-3) var(--sp-4);
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+    }
+    .test-row:last-child { border-bottom: none; }
+    .test-status { font-weight: 600; font-size: 0.8125rem; }
+    .test-status--pass { color: var(--success); }
+    .test-status--fail { color: var(--danger); }
+    .test-status--pending { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="devtools">
+    <div style="display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-2);">
+      <a href="../login/index.html" class="text-link" style="text-decoration:none;">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-arrow-left"></use></svg>
+      </a>
+      <h1 class="text-page-title">Dev Tools</h1>
+    </div>
+    <p class="text-caption" style="margin-bottom:var(--sp-6);">Reset data and run diagnostic checks.</p>
+
+    <!-- Reset button -->
+    <div class="card" style="margin-bottom:var(--sp-6);">
+      <div class="card__header">
+        <span class="text-card-title">Data Management</span>
+      </div>
+      <div class="card__body" style="display:flex;flex-direction:column;gap:var(--sp-4);">
+        <div>
+          <p class="text-body-sm" style="margin-bottom:var(--sp-3);">Reset all localStorage data to the original system seed. This will log you out.</p>
+          <button class="btn btn--danger" id="reset-btn">
+            <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-refresh-cw"></use></svg>
+            Reset to System Data
+          </button>
+        </div>
+        <div id="reset-status" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- Diagnostic tests -->
+    <div class="card">
+      <div class="card__header">
+        <span class="text-card-title">Diagnostic Tests</span>
+        <button class="btn btn--secondary btn--sm" id="run-tests-btn">Run All</button>
+      </div>
+      <div class="card__body" style="padding:0;">
+        <div class="test-row" id="test-tx-rollback">
+          <span>Transaction rollback on error</span>
+          <span class="test-status test-status--pending" id="test-tx-rollback-status">Pending</span>
+        </div>
+        <div class="test-row" id="test-stale-session">
+          <span>Stale session redirects to login</span>
+          <span class="test-status test-status--pending" id="test-stale-session-status">Pending</span>
+        </div>
+        <div class="test-row" id="test-wrong-role">
+          <span>Wrong role redirects to 403</span>
+          <span class="test-status test-status--pending" id="test-wrong-role-status">Pending</span>
+        </div>
+        <div class="test-row" id="test-version-conflict">
+          <span>Version conflict detection</span>
+          <span class="test-status test-status--pending" id="test-version-conflict-status">Pending</span>
+        </div>
+        <div class="test-row" id="test-seed-integrity">
+          <span>Seed data integrity</span>
+          <span class="test-status test-status--pending" id="test-seed-integrity-status">Pending</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { db, VersionConflictError } from '../../data/db.js';
+    import { seed, isSeeded } from '../../data/seed.js';
+    import { session } from '../../core/session.js';
+    import { guard } from '../../core/guard.js';
+
+    // Reset button
+    document.getElementById('reset-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('reset-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn__spinner"></span> Resetting…';
+
+      try {
+        session.destroy();
+        await seed();
+        const statusEl = document.getElementById('reset-status');
+        statusEl.style.display = 'block';
+        statusEl.innerHTML = `
+          <div class="form-banner form-banner--success">
+            <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-check-circle"></use></svg>
+            <span>System data restored successfully. Redirecting to login…</span>
+          </div>
+        `;
+        setTimeout(() => {
+          window.location.href = '../login/index.html';
+        }, 1500);
+      } catch (err) {
+        const statusEl = document.getElementById('reset-status');
+        statusEl.style.display = 'block';
+        statusEl.innerHTML = `
+          <div class="form-banner form-banner--error">
+            <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-alert-circle"></use></svg>
+            <span>Reset failed: ${err.message}</span>
+          </div>
+        `;
+        btn.disabled = false;
+        btn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-refresh-cw"></use></svg> Reset to System Data';
+      }
+    });
+
+    // Run tests
+    document.getElementById('run-tests-btn').addEventListener('click', async () => {
+      // Ensure data exists
+      if (!isSeeded()) await seed();
+
+      /* Test 1: Transaction rollback */
+      try {
+        const beforeCount = db.getAll('patients').length;
+        try {
+          db.transaction(tx => {
+            tx.insert('patients', { id: 'test-temp', mrn: 'TEST', name: 'Test', dateOfBirth: '2000-01-01', gender: 'Male', phone: '0000', isActive: true });
+            throw new Error('Intentional rollback');
+          });
+        } catch { /* expected */ }
+        const afterCount = db.getAll('patients').length;
+        setResult('test-tx-rollback-status', beforeCount === afterCount);
+      } catch {
+        setResult('test-tx-rollback-status', false);
+      }
+
+      /* Test 2: Stale session redirect */
+      try {
+        // Create a fake expired session
+        const fakeSess = { userId:'test', role:'ADMIN', lastActivity: Date.now() - 31*60*1000, createdAt: Date.now() - 60*60*1000 };
+        sessionStorage.setItem('clinova.session', JSON.stringify(fakeSess));
+        const result = session.get();
+        const passed = result === null; // should be null because expired
+        sessionStorage.removeItem('clinova.session');
+        setResult('test-stale-session-status', passed);
+      } catch {
+        sessionStorage.removeItem('clinova.session');
+        setResult('test-stale-session-status', false);
+      }
+
+      /* Test 3: Wrong role redirect */
+      try {
+        // guard() with mismatched role should throw
+        const fakeSess = { userId:'test', username:'test', role:'DOCTOR', staffId:'test', staffName:'Test', lastActivity: Date.now(), createdAt: Date.now() };
+        sessionStorage.setItem('clinova.session', JSON.stringify(fakeSess));
+        let threw = false;
+        try {
+          guard(['PHARMACIST']); // Doctor trying to access Pharmacist page
+        } catch (e) {
+          threw = true;
+        }
+        sessionStorage.removeItem('clinova.session');
+        setResult('test-wrong-role-status', threw);
+      } catch {
+        sessionStorage.removeItem('clinova.session');
+        setResult('test-wrong-role-status', false);
+      }
+
+      /* Test 4: Version conflict detection */
+      try {
+        const settings = db.getAll('settings');
+        if (settings.length > 0) {
+          const s = settings[0];
+          // Simulate stale _v
+          let threw = false;
+          try {
+            db.update('settings', s.id, { value: '"test"', _v: s._v - 1 });
+          } catch (err) {
+            threw = err instanceof VersionConflictError;
+          }
+          setResult('test-version-conflict-status', threw);
+        } else {
+          setResult('test-version-conflict-status', false);
+        }
+      } catch {
+        setResult('test-version-conflict-status', false);
+      }
+
+      /* Test 5: Seed data integrity */
+      try {
+        const checks = [
+          db.getAll('users').length >= 14,
+          db.getAll('staff').length >= 15,
+          db.getAll('departments').length === 6,
+          db.getAll('patients').length >= 24,
+          db.getAll('appointments').length >= 40,
+          db.getAll('medicines').length >= 28,
+          db.getAll('suppliers').length === 4,
+          db.getAll('purchaseOrders').length >= 6,
+          db.getAll('labCatalog').length >= 12,
+          db.getAll('labOrders').length >= 28,
+        ];
+        setResult('test-seed-integrity-status', checks.every(Boolean));
+      } catch {
+        setResult('test-seed-integrity-status', false);
+      }
+    });
+
+    function setResult(id, passed) {
+      const el = document.getElementById(id);
+      el.textContent = passed ? 'Pass' : 'Fail';
+      el.className = `test-status test-status--${passed ? 'pass' : 'fail'}`;
+    }
+  </script>
+</body>
+</html>

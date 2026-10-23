@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — Clinova</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { admin } from '../../api/admin.js';
+    import { Modal, Toast } from '../../components/ui.js';
+    import { seed } from '../../data/seed.js';
+
+    initShell(['ADMIN'], () => {
+      const page = getPageContent();
+      const settings = admin.getSettings() || {
+        hospitalName: 'Clinova Healthcare',
+        tagline: 'Care you can trust',
+        address: '123 Health Ave, Medical District',
+        phone: '+1 (555) 123-4567',
+        defaultConsultFee: 50000,
+        lowStockThreshold: 10,
+        expiryAlertDays: 90,
+        sessionTimeoutMins: 30
+      };
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Global Settings</h1>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="split__main card">
+            <div class="card__header"><span class="text-card-title">Configuration</span></div>
+            <div class="card__body">
+              <form id="settings-form" class="form-grid">
+                <!-- HOSPITAL INFORMATION -->
+                <div class="form-group" style="grid-column: span 2; margin-top: var(--sp-4);">
+                  <div class="text-body" style="font-weight:600; border-bottom:1px solid var(--border); padding-bottom:var(--sp-2);">Hospital Information</div>
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                  <label class="form-label">Hospital Name</label>
+                  <input type="text" class="form-input" name="hospitalName" value="${settings.hospitalName}" required>
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                  <label class="form-label">Tagline</label>
+                  <input type="text" class="form-input" name="tagline" value="${settings.tagline}">
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                  <label class="form-label">Address</label>
+                  <textarea class="form-input" name="address" rows="2">${settings.address}</textarea>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Phone</label>
+                  <input type="text" class="form-input" name="phone" value="${settings.phone}">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Email</label>
+                  <input type="email" class="form-input" name="email" value="${settings.email || ''}">
+                </div>
+
+                <!-- APPOINTMENT SETTINGS -->
+                <div class="form-group" style="grid-column: span 2; margin-top: var(--sp-4);">
+                  <div class="text-body" style="font-weight:600; border-bottom:1px solid var(--border); padding-bottom:var(--sp-2);">Appointment Settings</div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Default Consultation Fee (₹)</label>
+                  <input type="number" class="form-input" name="defaultConsultFee" value="${settings.defaultConsultFee / 100}">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Appointment Slot Duration (Mins)</label>
+                  <input type="number" class="form-input" name="slotDuration" value="${settings.slotDuration || 30}">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Working Start Time</label>
+                  <input type="time" class="form-input" name="startTime" value="${settings.startTime || '09:00'}">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Working End Time</label>
+                  <input type="time" class="form-input" name="endTime" value="${settings.endTime || '17:00'}">
+                </div>
+
+                <!-- PHARMACY & LAB ALERT SETTINGS -->
+                <div class="form-group" style="grid-column: span 2; margin-top: var(--sp-4);">
+                  <div class="text-body" style="font-weight:600; border-bottom:1px solid var(--border); padding-bottom:var(--sp-2);">Operational Alerts</div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Low Stock Threshold</label>
+                  <input type="number" class="form-input" name="lowStockThreshold" value="${settings.lowStockThreshold}">
+                  <div class="text-caption" style="margin-top:4px;">Minimum quantity before triggering low stock warnings.</div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Expiry Alert (Days)</label>
+                  <input type="number" class="form-input" name="expiryAlertDays" value="${settings.expiryAlertDays}">
+                  <div class="text-caption" style="margin-top:4px;">Days before expiry to trigger warnings.</div>
+                </div>
+
+                <!-- SESSION SETTINGS -->
+                <div class="form-group" style="grid-column: span 2; margin-top: var(--sp-4);">
+                  <div class="text-body" style="font-weight:600; border-bottom:1px solid var(--border); padding-bottom:var(--sp-2);">Security & Session</div>
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                  <label class="form-label">Session Timeout (Mins)</label>
+                  <input type="number" class="form-input" name="sessionTimeoutMins" value="${settings.sessionTimeoutMins}">
+                  <div class="text-caption" style="margin-top:4px;">Controls automatic session expiration after inactivity.</div>
+                </div>
+                
+                <div class="form-group" style="grid-column: span 2; margin-top: var(--sp-4);">
+                  <button type="submit" class="btn btn--primary">Save Settings</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="split__aside card">
+            <div class="card__header"><span class="text-card-title">Data Management</span></div>
+            <div class="card__body">
+              <div style="margin-bottom:var(--sp-6);">
+                <div class="text-body" style="font-weight:600; margin-bottom:4px;">Export JSON</div>
+                <div class="text-caption" style="margin-bottom:8px;">Download a full backup of the LocalStorage database.</div>
+                <button class="btn btn--secondary" id="btn-export" style="width:100%;">Export Data</button>
+              </div>
+
+              <div style="margin-bottom:var(--sp-6);">
+                <div class="text-body" style="font-weight:600; margin-bottom:4px;">Import JSON</div>
+                <div class="text-caption" style="margin-bottom:8px;">Restore data from a backup file.</div>
+                <button class="btn btn--secondary" id="btn-import" style="width:100%;">Import Data</button>
+                <input type="file" id="import-file" accept="application/json" style="display:none;">
+              </div>
+
+              <div style="border-top:1px solid var(--border); padding-top:var(--sp-4);">
+                <div class="text-body" style="font-weight:600; margin-bottom:4px; color:var(--danger);">Factory Reset</div>
+                <div class="text-caption" style="margin-bottom:8px;">Erase all data and generate fresh deterministic system data.</div>
+                <button class="btn btn--danger" id="btn-reset" style="width:100%;">Reset to System Data</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('settings-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const data = Object.fromEntries(fd.entries());
+        data.defaultConsultFee = parseInt(data.defaultConsultFee) * 100;
+        data.lowStockThreshold = parseInt(data.lowStockThreshold);
+        data.expiryAlertDays = parseInt(data.expiryAlertDays);
+        data.sessionTimeoutMins = parseInt(data.sessionTimeoutMins);
+        data.slotDuration = parseInt(data.slotDuration);
+
+        admin.updateSettings(data);
+        Toast.show('Settings saved successfully.');
+      });
+
+      document.getElementById('btn-export').addEventListener('click', () => {
+        const json = admin.exportDataJSON();
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `clinova_backup_${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+      });
+
+      document.getElementById('btn-import').addEventListener('click', () => {
+        document.getElementById('import-file').click();
+      });
+
+      document.getElementById('import-file').addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const data = JSON.parse(ev.target.result);
+            if (!data.collections || typeof data.collections !== 'string') {
+              throw new Error('Invalid backup format: Missing or malformed collections string.');
+            }
+            
+            Modal.confirm({
+              title: 'DANGER: Import Backup',
+              message: 'This will completely replace the current database with the imported backup. Type "IMPORT" to confirm.',
+              confirmText: 'Import Data',
+              onConfirm: () => {
+                const input = document.getElementById('import-confirm-input');
+                if (input && input.value === 'IMPORT') {
+                  admin.importDataJSON(JSON.stringify(data));
+                  Toast.show('Database restored successfully. Logging out...');
+                  setTimeout(() => window.location.href = '../login/index.html', 1500);
+                } else {
+                  Toast.show('Import cancelled: Validation failed.', 'error');
+                }
+              }
+            });
+
+            // Inject input into modal
+            setTimeout(() => {
+              const body = document.querySelector('.modal__body');
+              if (body) {
+                body.innerHTML += `<div style="margin-top:16px;"><input type="text" id="import-confirm-input" class="form-input" placeholder="Type IMPORT"></div>`;
+              }
+            }, 10);
+            
+          } catch (err) {
+            Toast.show(`Import failed: ${err.message}`, 'error');
+          }
+          // Reset file input
+          e.target.value = '';
+        };
+        reader.readAsText(file);
+      });
+
+      document.getElementById('btn-reset').addEventListener('click', () => {
+        Modal.confirm({
+          title: 'DANGER: Factory Reset',
+          message: 'This will irreversibly delete ALL current data and generate a new set of system data. Type "RESET" to confirm.',
+          confirmText: 'Reset Data',
+          onConfirm: () => {
+            const input = document.getElementById('reset-confirm-input');
+            if (input && input.value === 'RESET') {
+              localStorage.clear();
+              seed().then(() => {
+                Toast.show('Database reset. Logging out...');
+                setTimeout(() => window.location.href = '../login/index.html', 1500);
+              });
+            } else {
+              Toast.show('Reset cancelled: Validation failed.', 'error');
+            }
+          }
+        });
+        
+        // Inject input into modal
+        setTimeout(() => {
+          const body = document.querySelector('.modal__body');
+          if (body) {
+            body.innerHTML += `<div style="margin-top:16px;"><input type="text" id="reset-confirm-input" class="form-input" placeholder="Type RESET"></div>`;
+          }
+        }, 10);
+      });
+    });
+  </script>
+</body>
+</html>

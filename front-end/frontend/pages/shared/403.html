@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access Denied — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div style="min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:var(--sp-6);">
+    <div class="error-state">
+      <div class="error-state__icon">
+        <svg class="icon icon--lg" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-lock"></use></svg>
+      </div>
+      <div class="error-state__title">403 — Access Denied</div>
+      <div class="error-state__text">You don't have permission to view this page. Please sign in with an account that has the required access.</div>
+      <div style="display:flex;gap:var(--sp-3);margin-top:var(--sp-2);">
+        <button class="btn btn--secondary" id="go-back">Go Back</button>
+        <a class="btn btn--primary" href="../login/index.html" id="go-login">Sign In</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    document.getElementById('go-back').addEventListener('click', () => {
+      if (window.history.length > 1) window.history.back();
+      else window.location.href = '../login/index.html';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,256 @@
+/* ============================================
+   CLINOVA HEALTHCARE — Print Styles
+   ============================================ */
+@media print {
+
+    /* ── Hide app chrome ── */
+    .sidebar,
+    .sidebar-overlay,
+    .header,
+    .topbar__right,
+    .hamburger,
+    .toast-container,
+    .modal-overlay,
+    .btn,
+    .page-header__actions,
+    .table-toolbar,
+    .table-footer,
+    .pagination,
+    .tabs,
+    .filter-bar,
+    .search-bar,
+    .breadcrumb,
+    .nav-group,
+    .skip-to-content,
+    .no-print {
+        display: none !important;
+    }
+
+    /* ── Reset layout ── */
+    body {
+        background: white;
+        color: black;
+        font-size: 11pt;
+        line-height: 1.5;
+    }
+
+    .app {
+        display: block;
+    }
+
+    .main {
+        margin-left: 0;
+        padding-top: 0;
+    }
+
+    .main__inner {
+        padding: 0;
+        max-width: 100%;
+    }
+
+    .card {
+        border: none;
+        box-shadow: none;
+        background: white;
+    }
+
+    /* ── Print Header (hospital letterhead) ── */
+    .print-header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #123B5D;
+        margin-bottom: 20px;
+    }
+
+    .print-header__logo {
+        width: 48px;
+        height: 48px;
+    }
+
+    .print-header__info {
+        flex: 1;
+    }
+
+    .print-header__name {
+        font-size: 16pt;
+        font-weight: 600;
+        color: #123B5D;
+    }
+
+    .print-header__tagline {
+        font-size: 8pt;
+        color: #64748B;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .print-header__contact {
+        font-size: 8pt;
+        color: #64748B;
+        text-align: right;
+    }
+
+    /* ── Patient Block ── */
+    .print-patient {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px 24px;
+        margin-bottom: 16px;
+        padding: 12px;
+        border: 1px solid #E2E8F0;
+        border-radius: 4px;
+        font-size: 9pt;
+    }
+
+    .print-patient__field {
+        display: flex;
+        gap: 6px;
+    }
+
+    .print-patient__label {
+        font-weight: 600;
+        color: #64748B;
+        min-width: 80px;
+    }
+
+    /* ── Tables in print ── */
+    .data-table {
+        font-size: 9pt;
+    }
+
+    .data-table th {
+        background: #F5F8FA !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    .data-table td,
+    .data-table th {
+        padding: 6px 10px;
+        border: 1px solid #E2E8F0;
+    }
+
+    .data-table tr:hover td {
+        background: none;
+    }
+
+    /* ── Badges in print ── */
+    .badge {
+        border: 1px solid currentColor;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    /* ── Print Footer ── */
+    .print-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 7pt;
+        color: #94A3B8;
+        padding-top: 8px;
+        border-top: 1px solid #E2E8F0;
+    }
+
+    /* ── Invoice specific ── */
+    .invoice-summary {
+        float: right;
+        width: 250px;
+        margin-top: 16px;
+    }
+
+    .invoice-summary__row {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 0;
+        font-size: 9pt;
+    }
+
+    .invoice-summary__total {
+        font-weight: 600;
+        font-size: 11pt;
+        border-top: 2px solid #123B5D;
+        padding-top: 8px;
+        margin-top: 4px;
+    }
+
+    /* ── Lab Report flags ── */
+    .lab-flag--critical {
+        font-weight: 700;
+        color: #C24141 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    .lab-flag--high,
+    .lab-flag--low {
+        font-weight: 600;
+        color: #C98916 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    /* ── Page breaks ── */
+    .page-break-before {
+        page-break-before: always;
+    }
+
+    .page-break-after {
+        page-break-after: always;
+    }
+
+    .no-break {
+        page-break-inside: avoid;
+    }
+
+    /* ── Prescription print-specific ── */
+    .rx-symbol {
+        font-size: 14pt;
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: #123B5D;
+    }
+
+    .rx-item {
+        padding: 6px 0;
+        border-bottom: 1px solid #E2E8F0;
+        font-size: 9pt;
+    }
+
+    .rx-item__name {
+        font-weight: 600;
+    }
+
+    .rx-item__dosage {
+        color: #64748B;
+    }
+
+    /* ── Signature line ── */
+    .print-signature {
+        margin-top: 48px;
+        text-align: right;
+    }
+
+    .print-signature__line {
+        display: inline-block;
+        width: 200px;
+        border-top: 1px solid #1F2937;
+        padding-top: 4px;
+        font-size: 9pt;
+    }
+}
+
+/* ── Show print-only elements only in print ── */
+.print-only {
+    display: none;
+}
+
+@media print {
+    .print-only {
+        display: block !important;
+    }
+}

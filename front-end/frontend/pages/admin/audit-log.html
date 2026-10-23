@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audit Log — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format } from '../../components/ui.js';
+    import { admin } from '../../api/admin.js';
+    import { db } from '../../data/db.js';
+
+    initShell(['ADMIN'], () => {
+      const page = getPageContent();
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">System Audit Log</h1>
+            <p class="text-caption">Immutable record of all critical system actions.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="search-bar" style="max-width: 400px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="audit-search" placeholder="Search by action, user, or details...">
+            </div>
+          </div>
+          <div id="audit-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'timestamp', label: 'Timestamp', sortable: true, render: r => Format.datetime(r.timestamp) },
+        { key: 'userId', label: 'User', sortable: true, render: r => {
+          if (r.userId === 'SYSTEM') return '<strong>SYSTEM</strong>';
+          const user = db.getById('users', r.userId);
+          const staff = user ? db.getById('staff', user.staffId) : null;
+          return staff ? `${staff.name} (${user.username})` : r.userId;
+        }},
+        { key: 'action', label: 'Action', sortable: true, render: r => `<strong>${r.action}</strong>` },
+        { key: 'details', label: 'Details', sortable: true }
+      ];
+
+      const table = new DataTable('audit-table', columns, admin.getAuditLog(), { searchInputId: 'audit-search', defaultSort: 'timestamp' });
+      table.sortAsc = false;
+      table.render();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { db } from '../../data/db.js';
+    import { DataTable, Format, Badge } from '../../components/ui.js';
+    import { appointments, todayStr } from '../../api/appointments.js';
+    import { billing } from '../../api/billing.js';
+
+    initShell(['RECEPTIONIST'], (session) => {
+      const page = getPageContent();
+      // Stats use the LOCAL date (the shared reports helper uses UTC, which is wrong in India before 5:30 AM)
+      const todayAppts = appointments.list({ date: todayStr() });
+      const allBills = billing.list();
+      const stats = {
+        checkedIn: todayAppts.filter(a => a.status === 'CHECKED_IN').length,
+        scheduled: todayAppts.filter(a => a.status === 'SCHEDULED').length,
+        completed: todayAppts.filter(a => a.status === 'COMPLETED').length,
+        unpaidBills: allBills.filter(b => b.status === 'UNPAID' || b.status === 'PARTIAL').length,
+        todayApptsList: todayAppts,
+        recentBillsList: allBills.slice(0, 10)
+      };
+
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Dashboard</h1>
+            <p class="text-caption">Welcome back, ${Format.displayName(session.staffName, session.role)}</p>
+          </div>
+          <div class="page-header__actions">
+            <a href="appointments.html" class="btn btn--primary">
+              <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-calendar"></use></svg>
+              Book Appointment
+            </a>
+          </div>
+        </div>
+        
+        <div class="stat-row" style="margin-bottom:var(--sp-6);">
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--primary-light);color:var(--primary);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-users"></use></svg></div>
+            <div class="stat-card__value">${stats.checkedIn}</div>
+            <div class="stat-card__label">Checked In</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--warning-light);color:var(--warning-dark);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-calendar"></use></svg></div>
+            <div class="stat-card__value">${stats.scheduled}</div>
+            <div class="stat-card__label">Scheduled Today</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--success-light);color:var(--success);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-check-circle"></use></svg></div>
+            <div class="stat-card__value">${stats.completed}</div>
+            <div class="stat-card__label">Completed Today</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--danger-light);color:var(--danger);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-file-text"></use></svg></div>
+            <div class="stat-card__value">${stats.unpaidBills}</div>
+            <div class="stat-card__label">Unpaid Bills</div>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 2fr 1fr; gap: var(--sp-6);">
+          <div class="card">
+            <div class="card__header">
+              <span class="text-card-title">Today's Appointments</span>
+            </div>
+            <div id="today-table"></div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:var(--sp-6);">
+            <div class="card">
+              <div class="card__header">
+                <span class="text-card-title">Recent Bills</span>
+              </div>
+              <div class="card__body" style="padding-top:0;">
+                ${stats.recentBillsList.map(b => `
+                  <div style="border-bottom:1px solid var(--border); padding:var(--sp-2) 0;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                      <strong>${(() => { try { return db.getById('patients', b.patientId).name; } catch(e){ return 'Unknown Patient'; } })()}</strong>
+                      ${Badge.payment(b.status)}
+                    </div>
+                    <div class="text-body-sm">${Format.money(b.totalAmount)}</div>
+                  </div>
+                `).join('')}
+                <div style="margin-top:var(--sp-2);"><a href="billing.html" class="text-link text-body-sm">View all bills</a></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Setup Table
+      const columns = [
+        { key: 'tokenNumber', label: 'Token', width:'80px', sortable: true, render: r => `<strong>#${r.tokenNumber}</strong>` },
+        { key: 'time', label: 'Time', width:'110px', sortable: true, render: r => `${Format.time(r.time)}${r.mode ? `<br><span class="text-caption">${r.mode === 'WALK_IN' ? 'Walk-in' : 'Prior'}</span>` : ''}` },
+        { key: 'patientId', label: 'Patient', sortable: true, render: r => `<strong>${(() => { try { return db.getById('patients', r.patientId).name; } catch(e){ return 'Unknown'; } })()}</strong>` },
+        { key: 'doctorId', label: 'Doctor', sortable: true, render: r => { try { return db.getById('staff', r.doctorId).name; } catch(e){ return 'Unknown'; } } },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) }
+      ];
+
+      new DataTable('today-table', columns, stats.todayApptsList, { defaultSort: 'time' });
+    });
+  </script>
+</body>
+</html>

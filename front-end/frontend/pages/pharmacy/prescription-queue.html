@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prescription Queue — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="./pharmacy.css">
+  <link rel="stylesheet" href="./pharmacy-chrome.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div id="ph-print-frame"></div>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Modal, Toast } from '../../components/ui.js';
+    import { pharmacy } from '../../api/pharmacy.js';
+    import { db } from '../../data/db.js';
+
+    let rxTable;
+    let currentUser;
+
+    /* Escape user-typed text before putting it into HTML */
+    const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const REF_PATTERN = /^[A-Za-z0-9\-_/]{6,30}$/;
+
+    initShell(['PHARMACIST'], (session) => {
+      currentUser = session;
+      const page = getPageContent();
+
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Prescription Queue</h1>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--sp-6);">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4); display:flex; gap: var(--sp-3); align-items:center; flex-wrap:wrap;">
+            <div class="search-bar" style="max-width: 300px; margin: 0; flex:1;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="rx-search" placeholder="Search patient...">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <select class="form-input" id="filter-status">
+                <option value="PENDING">Pending (Queue)</option>
+                <option value="DISPENSED">Dispensed</option>
+                <option value="CANCELLED">Cancelled/Rejected</option>
+                <option value="">All Statuses</option>
+              </select>
+            </div>
+          </div>
+          <div id="rx-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'createdAt', label: 'Time',    width: '100px', sortable: true, render: r => Format.time(r.createdAt.split('T')[1].slice(0,5)) },
+        { key: 'date',      label: 'Date',    width: '120px', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'patientId', label: 'Patient', sortable: true, render: r => {
+          try {
+            const p = db.getById('patients', r.patientId);
+            return `<strong>${p.name}</strong><br><span class="text-caption">${p.mrn}</span>`;
+          } catch { return '—'; }
+        }},
+        { key: 'doctorId',  label: 'Doctor',  sortable: true, render: r => { try { return db.getById('staff', r.doctorId).name; } catch { return '—'; } }},
+        { key: 'items',     label: 'Items',   sortable: false, render: r => r.items.length + ' med(s)' },
+        { key: 'status',    label: 'Status',  sortable: true,  render: r => Badge.status(r.status) },
+        { key: 'actions',   label: '', width: '180px', render: r => {
+          if (r.status === 'PENDING') {
+            return `
+              <button class="btn btn--primary btn--sm btn-dispense" data-id="${r.id}" style="margin-right:4px;">Dispense</button>
+              <button class="btn btn--danger btn--sm btn--icon btn-reject" data-id="${r.id}" title="Reject" style="margin-right:4px;">
+                <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-x"></use></svg>
+              </button>
+            `;
+          }
+          let btns = `<button class="btn btn--secondary btn--sm btn-view" data-id="${r.id}" style="margin-right:4px;">View</button>`;
+          if (r.status === 'DISPENSED') {
+            btns += `<button class="btn btn--secondary btn--sm btn-print-rx" data-id="${r.id}" title="Print receipt">🖨</button>`;
+          }
+          return btns;
+        }}
+      ];
+
+      rxTable = new DataTable('rx-table', columns, [], { searchInputId: 'rx-search', defaultSort: 'createdAt' });
+      rxTable.sortAsc = true;
+      loadQueue();
+
+      document.getElementById('filter-status').addEventListener('change', e => {
+        rxTable.sortAsc = e.target.value === 'PENDING';
+        loadQueue();
+      });
+
+      document.getElementById('rx-table').addEventListener('click', e => {
+        const dispenseBtn = e.target.closest('.btn-dispense');
+        if (dispenseBtn) return handleDispense(dispenseBtn.dataset.id);
+
+        const rejectBtn = e.target.closest('.btn-reject');
+        if (rejectBtn) return handleReject(rejectBtn.dataset.id);
+
+        const viewBtn = e.target.closest('.btn-view');
+        if (viewBtn) return handleView(viewBtn.dataset.id);
+
+        const printBtn = e.target.closest('.btn-print-rx');
+        if (printBtn) return printReceipt(printBtn.dataset.id);
+      });
+    });
+
+    function loadQueue() {
+      const status = document.getElementById('filter-status').value;
+      const data = pharmacy.listPrescriptions(status || null);
+      rxTable.updateData(data);
+    }
+
+    function handleReject(id) {
+      Modal.confirm({
+        title: 'Reject Prescription',
+        message: 'Please provide a reason for rejecting this prescription (it will notify the doctor):',
+        confirmText: 'Reject',
+        confirmStyle: 'danger',
+        onConfirm: () => {
+          const reason = (prompt('Reason for rejection:') || '').trim();
+          if (reason.length < 5) throw new Error('A reason is required (at least 5 characters).');
+          pharmacy.rejectPrescription(id, reason, currentUser.staffId);
+          Toast.show('Prescription rejected.');
+          loadQueue();
+        }
+      });
+    }
+
+    /* ── Dispense with Payment (Task 6) ── */
+    function handleDispense(id) {
+      let rx, p;
+      try {
+        rx = db.getById('prescriptions', id);
+        p = db.getById('patients', rx.patientId);
+      } catch {
+        Toast.show('Could not load this prescription or its patient record.', 'error');
+        return;
+      }
+      if (rx.status !== 'PENDING') {
+        Toast.show('Only pending prescriptions can be dispensed.', 'error');
+        loadQueue();
+        return;
+      }
+      if (!Array.isArray(rx.items) || rx.items.length === 0) {
+        Toast.show('This prescription has no medicines to dispense.', 'error');
+        return;
+      }
+      const today = new Date().toISOString().split('T')[0];
+
+      let itemsHtml = '';
+      let canDispense = true;
+      let totalAmount = 0; // in paise
+
+      // Total requested per medicine (a medicine can appear on more than one line)
+      const requested = {};
+      for (const it of rx.items) {
+        requested[it.medicineId] = (requested[it.medicineId] || 0) + (Number(it.quantity) || 0);
+      }
+
+      for (const item of rx.items) {
+        let med;
+        try {
+          med = db.getById('medicines', item.medicineId);
+        } catch {
+          canDispense = false;
+          itemsHtml += `<tr>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); color:var(--danger);">
+              ${esc(item.name || item.medicineId)} <span style="font-size:0.75rem;">(medicine not found)</span>
+            </td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:center;">—</td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">—</td>
+          </tr>`;
+          continue;
+        }
+
+        const issues = [];
+        if (!Number.isInteger(item.quantity) || item.quantity <= 0) issues.push('Invalid quantity');
+        if (med.isActive === false) issues.push('Medicine is inactive');
+
+        const unitPrice = med.unitPrice || med.price || 0;
+        if (!(unitPrice > 0)) issues.push('Price not set');
+
+        const validBatches = (med.batches || []).filter(b => b.quantity > 0 && b.expiryDate >= today);
+        const validStock = validBatches.reduce((s, b) => s + b.quantity, 0);
+        const needed = requested[item.medicineId];
+        if (validStock < needed) {
+          issues.push(`Insufficient: ${validStock} available` + (needed !== item.quantity ? `, ${needed} needed in total` : ''));
+        }
+
+        if (issues.length) canDispense = false;
+        const stockWarning = issues.length
+          ? `<span style="color:var(--danger);font-weight:600;"> (${issues.join('; ')})</span>`
+          : '';
+
+        const lineTotal = unitPrice * (Number(item.quantity) || 0);
+        totalAmount += lineTotal;
+
+        itemsHtml += `
+          <tr>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border);">
+              <strong>${med.name}</strong><br>
+              <span class="text-caption">${item.dosage || ''} ${item.frequency ? '· ' + item.frequency : ''}</span>
+            </td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:center;">
+              ${item.quantity}${stockWarning}
+            </td>
+            <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">
+              ${Format.money(lineTotal)}
+            </td>
+          </tr>
+        `;
+      }
+
+      const totalFmt = Format.money(totalAmount);
+
+      const content = `
+        <div style="margin-bottom:var(--sp-4);">
+          <div class="text-caption">Patient</div>
+          <div class="text-body"><strong>${p.name}</strong> (${p.mrn})</div>
+        </div>
+        ${rx.notes ? `<div style="margin-bottom:var(--sp-4);padding:var(--sp-2);background:var(--warning-light);color:var(--warning-dark);border-radius:var(--radius-sm);">${rx.notes}</div>` : ''}
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="text-align:left;">Medicine</th>
+                <th style="text-align:center;">Req. Qty</th>
+                <th style="text-align:right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>${itemsHtml}</tbody>
+            <tfoot>
+              <tr>
+                <th colspan="2" style="padding:var(--sp-2); text-align:right; border-top:2px solid var(--border);">Total Bill:</th>
+                <th style="padding:var(--sp-2); text-align:right; border-top:2px solid var(--border);">${totalFmt}</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        ${!canDispense ? `<div style="margin-top:var(--sp-4);color:var(--danger);font-weight:500;">⚠ This prescription cannot be dispensed until the items marked in red are fixed (stock, price, or medicine status).</div>` : ''}
+
+        ${canDispense ? `
+        <!-- Payment Section -->
+        <div class="payment-section">
+          <div class="text-body" style="font-weight:600; margin-bottom:var(--sp-3);">Payment</div>
+          <div class="form-row" style="display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-3); margin-bottom:var(--sp-3);">
+            <div class="form-group">
+              <label class="form-group__label">Total Amount (auto)</label>
+              <input type="text" class="form-input" id="pay-total-display" value="${totalFmt}" readonly style="background:var(--bg-muted);">
+            </div>
+            <div class="form-group">
+              <label class="form-group__label">Payment Status *</label>
+              <select class="form-input" id="pay-status">
+                <option value="UNPAID">Unpaid / Pending</option>
+                <option value="PAID">Paid</option>
+              </select>
+              <div class="field-error" id="pay-status-err" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div id="pay-method-section" class="payment-method-fields">
+            <div class="form-row" style="display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-3); margin-bottom:var(--sp-3);">
+              <div class="form-group">
+                <label class="form-group__label">Payment Method *</label>
+                <select class="form-input" id="pay-method">
+                  <option value="">Select…</option>
+                  <option value="CASH">Cash</option>
+                  <option value="UPI">UPI</option>
+                  <option value="CARD">Card</option>
+                  <option value="NET_BANKING">Net Banking</option>
+                  <option value="INSURANCE">Insurance</option>
+                </select>
+                <div class="field-error" id="pay-method-err" aria-live="polite"></div>
+              </div>
+              <div class="form-group">
+                <label class="form-group__label">Amount Received (₹) *</label>
+                <input type="number" class="form-input" id="pay-received" min="0" step="0.01" placeholder="0.00">
+                <div class="field-error" id="pay-received-err" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <div id="pay-ref-section" style="display:none;">
+              <div class="form-row" style="display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-3); margin-bottom:var(--sp-3);">
+                <div class="form-group" id="pay-txn-group">
+                  <label class="form-group__label">Transaction / Reference ID *</label>
+                  <input type="text" class="form-input" id="pay-txn" placeholder="TXN / UTR number" maxlength="30">
+                  <div class="field-error" id="pay-txn-err" aria-live="polite"></div>
+                </div>
+                <div class="form-group" id="pay-insurance-group" style="display:none;">
+                  <label class="form-group__label">Insurer Name *</label>
+                  <input type="text" class="form-input" id="pay-insurer" placeholder="Insurance company" maxlength="60">
+                  <div class="field-error" id="pay-insurer-err" aria-live="polite"></div>
+                </div>
+                <div class="form-group" id="pay-claim-group" style="display:none;">
+                  <label class="form-group__label">Claim / Policy No. *</label>
+                  <input type="text" class="form-input" id="pay-claim" placeholder="Claim number" maxlength="30">
+                  <div class="field-error" id="pay-claim-err" aria-live="polite"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="pay-balance" class="payment-balance-display"></div>
+          </div>
+        </div>
+        ` : ''}
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="disp-cancel">Cancel</button>
+        <button class="btn btn--primary" id="disp-submit" ${!canDispense ? 'disabled' : ''}>Dispense &amp; Bill</button>
+      `;
+
+      const m = Modal.show({ title: 'Dispense Prescription', content, size: 'md', actions });
+      document.getElementById('disp-cancel').addEventListener('click', m.close);
+
+      if (!canDispense) return;
+
+      /* Payment method show/hide */
+      const payStatus = document.getElementById('pay-status');
+      const methodSection = document.getElementById('pay-method-section');
+      const refSection = document.getElementById('pay-ref-section');
+      const insuranceGroup = document.getElementById('pay-insurance-group');
+      const claimGroup = document.getElementById('pay-claim-group');
+      const txnGroup = document.getElementById('pay-txn-group');
+
+      payStatus.addEventListener('change', () => {
+        if (payStatus.value === 'PAID') {
+          methodSection.classList.add('visible');
+        } else {
+          methodSection.classList.remove('visible');
+        }
+        updateBalance();
+      });
+
+      document.getElementById('pay-method').addEventListener('change', () => {
+        const method = document.getElementById('pay-method').value;
+        const needsRef = ['UPI', 'CARD', 'NET_BANKING'].includes(method);
+        const isInsurance = method === 'INSURANCE';
+
+        refSection.style.display = (needsRef || isInsurance) ? '' : 'none';
+        txnGroup.style.display = needsRef ? '' : 'none';
+        insuranceGroup.style.display = isInsurance ? '' : 'none';
+        claimGroup.style.display = isInsurance ? '' : 'none';
+        document.getElementById('pay-method-err').textContent = '';
+      });
+
+      document.getElementById('pay-received')?.addEventListener('input', updateBalance);
+
+      function updateBalance() {
+        const balEl = document.getElementById('pay-balance');
+        if (!balEl) return;
+        const received = Math.round(parseFloat(document.getElementById('pay-received')?.value || 0) * 100);
+        const diff = received - totalAmount;
+        if (isNaN(diff)) { balEl.textContent = ''; return; }
+        if (diff >= 0) {
+          balEl.className = 'payment-balance-display positive';
+          balEl.textContent = `Change: ${Format.money(diff)}`;
+        } else {
+          balEl.className = 'payment-balance-display negative';
+          balEl.textContent = `Balance due: ${Format.money(Math.abs(diff))}`;
+        }
+        document.getElementById('pay-received-err').textContent = '';
+      }
+
+      /* Submit */
+      const submitBtn = document.getElementById('disp-submit');
+      const ERR_IDS = ['pay-method-err', 'pay-received-err', 'pay-txn-err', 'pay-insurer-err', 'pay-claim-err'];
+
+      submitBtn.addEventListener('click', () => {
+        const status = payStatus.value;
+        const paymentData = { status };
+        let ok = true;
+        const fail = (errId, msg) => { document.getElementById(errId).textContent = msg; ok = false; };
+
+        ERR_IDS.forEach(e => { const el = document.getElementById(e); if (el) el.textContent = ''; });
+
+        if (status === 'PAID') {
+          const method = document.getElementById('pay-method').value;
+          if (!method) fail('pay-method-err', 'Payment method is required');
+          else paymentData.method = method;
+
+          const receivedStr = document.getElementById('pay-received').value.trim();
+          const received = Number(receivedStr);
+          if (!receivedStr || !Number.isFinite(received)) {
+            fail('pay-received-err', 'Enter the amount received');
+          } else if (received <= 0) {
+            fail('pay-received-err', 'Amount received must be greater than 0');
+          } else if (Math.abs(received * 100 - Math.round(received * 100)) > 1e-6) {
+            fail('pay-received-err', 'Use at most 2 decimal places');
+          } else if (Math.round(received * 100) < totalAmount) {
+            fail('pay-received-err', `Amount received is less than the bill total (${totalFmt}). Collect the full amount or mark as Unpaid.`);
+          } else {
+            paymentData.amountReceived = received;
+          }
+
+          if (['UPI', 'CARD', 'NET_BANKING'].includes(method)) {
+            const txn = document.getElementById('pay-txn')?.value?.trim() || '';
+            if (!txn) fail('pay-txn-err', 'Transaction/reference ID is required');
+            else if (!REF_PATTERN.test(txn)) fail('pay-txn-err', 'Use 6–30 letters, digits, - _ /');
+            else paymentData.transactionRef = txn;
+          }
+
+          if (method === 'INSURANCE') {
+            const insurer = document.getElementById('pay-insurer')?.value?.trim() || '';
+            const claim = document.getElementById('pay-claim')?.value?.trim() || '';
+            if (insurer.length < 2) fail('pay-insurer-err', 'Insurer name is required');
+            else paymentData.insurer = insurer;
+            if (!claim) fail('pay-claim-err', 'Claim / policy number is required');
+            else if (!REF_PATTERN.test(claim)) fail('pay-claim-err', 'Use 6–30 letters, digits, - _ /');
+            else paymentData.claimNo = claim;
+          }
+        }
+
+        if (!ok) return;
+
+        submitBtn.disabled = true; // prevent double-submit
+        try {
+          pharmacy.dispense(id, currentUser.staffId, paymentData);
+          Toast.show('Prescription dispensed and billed to patient.');
+          m.close();
+          loadQueue();
+          // Offer to print receipt
+          setTimeout(() => {
+            if (confirm('Print dispensing receipt?')) {
+              printReceipt(id);
+            }
+          }, 200);
+        } catch (err) {
+          Toast.show(err.message, 'error');
+          submitBtn.disabled = false;
+        }
+      });
+    }
+
+    /* ── View dispensed/cancelled Rx ── */
+    function handleView(id) {
+      const rx = db.getById('prescriptions', id);
+      let pName = '—';
+      try { pName = db.getById('patients', rx.patientId).name; } catch {}
+
+      const payInfo = rx.payment;
+      const payHtml = payInfo ? `
+        <div style="margin-top:var(--sp-3); padding:var(--sp-3); background:var(--bg-muted); border-radius:var(--radius-sm);">
+          <div class="text-body-sm" style="font-weight:600; margin-bottom:var(--sp-2);">Payment Details</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">
+            <div><span class="text-caption">Status:</span> ${Badge.status(payInfo.status)}</div>
+            ${payInfo.method ? `<div><span class="text-caption">Method:</span> ${esc(payInfo.method)}</div>` : ''}
+            ${payInfo.totalAmount ? `<div><span class="text-caption">Total:</span> ${Format.money(payInfo.totalAmount)}</div>` : ''}
+            ${payInfo.amountReceived ? `<div><span class="text-caption">Received:</span> ₹${(payInfo.amountReceived / 100).toFixed(2)}</div>` : ''}
+            ${payInfo.transactionRef ? `<div><span class="text-caption">Ref ID:</span> ${esc(payInfo.transactionRef)}</div>` : ''}
+            ${payInfo.insurer ? `<div><span class="text-caption">Insurer:</span> ${esc(payInfo.insurer)}</div>` : ''}
+            ${payInfo.claimNo ? `<div><span class="text-caption">Claim No:</span> ${esc(payInfo.claimNo)}</div>` : ''}
+          </div>
+        </div>
+      ` : '';
+
+      const content = `
+        <div style="margin-bottom:var(--sp-3);"><strong>Patient:</strong> ${pName}</div>
+        <div style="margin-bottom:var(--sp-3);"><strong>Status:</strong> ${Badge.status(rx.status)}</div>
+        ${rx.notes ? `<div style="margin-bottom:var(--sp-3);">${rx.notes}</div>` : ''}
+        <ul style="margin-bottom:var(--sp-3);">
+          ${rx.items.map(i => `<li>${i.name || i.medicineId} (Qty: ${i.quantity})</li>`).join('')}
+        </ul>
+        ${payHtml}
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="view-close">Close</button>
+        ${rx.status === 'DISPENSED' ? `<button class="btn btn--secondary" id="view-print-rx">🖨 Print Receipt</button>` : ''}
+      `;
+
+      const mv = Modal.show({ title: 'Prescription Details', content, size: 'sm', actions });
+      document.getElementById('view-close').addEventListener('click', mv.close);
+      document.getElementById('view-print-rx')?.addEventListener('click', () => { mv.close(); printReceipt(id); });
+    }
+
+    /* ── Print: Dispensing Receipt ── */
+    function printReceipt(id) {
+      const rx = db.getById('prescriptions', id);
+      let p, doc;
+      try { p = db.getById('patients', rx.patientId); } catch { p = { name: '—', mrn: '—' }; }
+      try { doc = db.getById('staff', rx.doctorId).name; } catch { doc = '—'; }
+
+      let dispensedByName = '—';
+      try { dispensedByName = db.getById('staff', rx.dispensedBy).name; } catch {}
+
+      const payInfo = rx.payment || {};
+      const today = new Date().toISOString().split('T')[0];
+
+      let rows = '';
+      let total = 0;
+      // Prefer the prices saved at dispense time so a later price change never alters an issued receipt
+      const stored = Array.isArray(rx.dispenseItems) && rx.dispenseItems.length ? rx.dispenseItems : null;
+      const lines = stored
+        ? stored.map((d, idx) => ({
+            name: d.name, dosage: rx.items[idx]?.dosage || '',
+            quantity: d.quantity, unitPrice: d.unitPrice, lineTotal: d.lineTotal
+          }))
+        : rx.items.map(item => {
+            let med = null;
+            try { med = db.getById('medicines', item.medicineId); } catch {}
+            const unitPrice = med ? (med.unitPrice || med.price || 0) : 0;
+            return {
+              name: item.name || (med?.name) || item.medicineId, dosage: item.dosage || '',
+              quantity: item.quantity, unitPrice, lineTotal: unitPrice * item.quantity
+            };
+          });
+      for (const l of lines) {
+        total += l.lineTotal;
+        rows += `<tr>
+          <td>${l.name}</td>
+          <td style="text-align:center;">${l.dosage}</td>
+          <td style="text-align:center;">${l.quantity}</td>
+          <td style="text-align:right;">${Format.money(l.unitPrice)}</td>
+          <td style="text-align:right;">${Format.money(l.lineTotal)}</td>
+        </tr>`;
+      }
+
+      const paySection = payInfo.status ? `
+        <div class="print-payment-section">
+          <strong>Payment:</strong> ${payInfo.status}
+          ${payInfo.method ? ` | Method: ${esc(payInfo.method)}` : ''}
+          ${payInfo.transactionRef ? ` | Ref: ${esc(payInfo.transactionRef)}` : ''}
+          ${payInfo.insurer ? ` | Insurer: ${esc(payInfo.insurer)}` : ''}
+          ${payInfo.claimNo ? ` | Claim: ${esc(payInfo.claimNo)}` : ''}
+          ${payInfo.amountReceived ? ` | Received: ₹${(payInfo.amountReceived / 100).toFixed(2)}` : ''}
+          ${payInfo.balance !== undefined ? ` | Change: ₹${Math.max(0, payInfo.balance / 100).toFixed(2)}` : ''}
+        </div>
+      ` : '';
+
+      document.getElementById('ph-print-frame').innerHTML = `
+        <div class="print-header">
+          <div>
+            <div class="print-clinic-name">Clinova Healthcare</div>
+            <div class="print-doc-title">Dispensing Receipt</div>
+          </div>
+          <div style="text-align:right;">
+            <div><strong>Rx ID:</strong> ${id}</div>
+            <div><strong>Date:</strong> ${Format.date(rx.dispensedAt || rx.createdAt)}</div>
+          </div>
+        </div>
+        <div class="print-meta">
+          <div><strong>Patient:</strong> ${p.name}</div>
+          <div><strong>MRN:</strong> ${p.mrn}</div>
+          <div><strong>Doctor:</strong> ${doc}</div>
+          <div><strong>Dispensed By:</strong> ${dispensedByName}</div>
+        </div>
+        <table>
+          <thead><tr>
+            <th>Medicine</th>
+            <th style="text-align:center;">Dosage</th>
+            <th style="text-align:center;">Qty</th>
+            <th style="text-align:right;">Unit Price</th>
+            <th style="text-align:right;">Total</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td colspan="4" style="text-align:right;font-weight:700;border-top:1px solid #ccc;">Grand Total</td>
+            <td style="text-align:right;font-weight:700;border-top:1px solid #ccc;">${Format.money(total)}</td>
+          </tr></tfoot>
+        </table>
+        ${paySection}
+        <div class="print-footer">
+          Clinova Healthcare — Thank you for trusting us with your health. This is a computer-generated receipt.
+        </div>
+      `;
+      window.print();
+    }
+  </script>
+  <script type="module" src="./pharmacy-shell.js"></script>
+</body>
+</html>

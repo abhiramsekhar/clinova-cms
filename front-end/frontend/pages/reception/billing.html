@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Billing — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+  <style>
+    .invoice { padding: var(--sp-6); background: white; }
+    .invoice__header { display: flex; justify-content: space-between; border-bottom: 2px solid var(--border); padding-bottom: var(--sp-4); margin-bottom: var(--sp-6); }
+    .invoice__meta { text-align: right; }
+    .invoice__table { width: 100%; border-collapse: collapse; margin-bottom: var(--sp-6); }
+    .invoice__table th { text-align: left; padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 500; font-size: 0.875rem; }
+    .invoice__table td { padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
+    .invoice__table th:last-child, .invoice__table td:last-child { text-align: right; }
+    .invoice__summary { width: 300px; margin-left: auto; }
+    .invoice__summary-row { display: flex; justify-content: space-between; padding: var(--sp-2) 0; }
+    .invoice__summary-row--total { font-weight: 700; font-size: 1.125rem; border-top: 2px solid var(--border); margin-top: var(--sp-2); padding-top: var(--sp-3); }
+    
+    @media print {
+      body * { visibility: hidden; }
+      #invoice-print-area, #invoice-print-area * { visibility: visible; }
+      #invoice-print-area { position: absolute; left: 0; top: 0; width: 100%; }
+      .modal__close, .modal__footer { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Toast, Modal } from '../../components/ui.js';
+    import { billing } from '../../api/billing.js';
+    import { db } from '../../data/db.js';
+
+    let billTable;
+    let currentUser;
+
+    initShell(['RECEPTIONIST', 'ADMIN'], (session) => {
+      currentUser = session;
+      const page = getPageContent();
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Billing & Invoices</h1>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--sp-6);">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4); display:flex; gap:var(--sp-4); flex-wrap:wrap;">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="bill-search" placeholder="Search bill ID, patient...">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <select class="form-input" id="filter-status">
+                <option value="">All Statuses</option>
+                <option value="UNPAID">Unpaid</option>
+                <option value="PARTIAL">Partial</option>
+                <option value="PAID">Paid</option>
+                <option value="CANCELLED">Cancelled / Refunded</option>
+              </select>
+            </div>
+          </div>
+          <div id="bills-table"></div>
+        </div>
+      `;
+
+      // Setup Table
+      const columns = [
+        { key: 'id', label: 'Invoice #', sortable: true, render: r => `<strong>${r.id}</strong>` },
+        { key: 'createdAt', label: 'Date', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'patientId', label: 'Patient', sortable: true, render: r => {
+          let p; try { p = db.getById('patients', r.patientId); } catch (e) { p = { name: 'Unknown', mrn: '' }; }
+          return `<strong>${p.name}</strong><br><span class="text-caption">${p.mrn}</span>`;
+        }},
+        { key: 'totalAmount', label: 'Amount', sortable: true, render: r => Format.money(r.totalAmount) },
+        { key: 'balance', label: 'Balance', sortable: false, render: r => {
+          const bal = r.status === 'CANCELLED' ? 0 : r.totalAmount - r.paidAmount;
+          return bal > 0 ? `<span style="color:var(--danger);font-weight:600;">${Format.money(bal)}</span>` : '-';
+        }},
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) },
+        { key: 'actions', label: '', width: '120px', render: r => `
+          <button class="btn btn--secondary btn--sm btn-view" data-id="${r.id}">View</button>
+          ${['UNPAID', 'PARTIAL'].includes(r.status) ? `<button class="btn btn--primary btn--sm btn-pay" data-id="${r.id}">Pay</button>` : ''}
+        `}
+      ];
+
+      billTable = new DataTable('bills-table', columns, [], { searchInputId: 'bill-search', defaultSort: 'createdAt' });
+      billTable.sortAsc = false;
+      loadBills();
+
+      // Filters
+      document.getElementById('filter-status').addEventListener('change', loadBills);
+
+      // Actions Event Delegation
+      document.getElementById('bills-table').addEventListener('click', (e) => {
+        const viewBtn = e.target.closest('.btn-view');
+        if (viewBtn) return showInvoice(viewBtn.dataset.id);
+        
+        const payBtn = e.target.closest('.btn-pay');
+        if (payBtn) return showPaymentModal(payBtn.dataset.id);
+      });
+    });
+
+    function loadBills() {
+      const status = document.getElementById('filter-status').value;
+      const data = billing.list(status ? { status } : {});
+      billTable.updateData(data);
+    }
+
+    function showInvoice(id) {
+      const bill = billing.getById(id);
+      const p = db.getById('patients', bill.patientId);
+      const balance = bill.totalAmount - bill.paidAmount;
+      const payHistory = billing.paymentsFor(bill.id).map(pm => `
+        <div style="display:flex;justify-content:space-between;padding:2px 0;" class="text-body-sm">
+          <span>${Format.datetime(pm.createdAt)} · ${pm.method}</span>
+          <span>${pm.amount < 0 ? '−' : ''}${Format.money(Math.abs(pm.amount))}</span>
+        </div>`).join('');
+
+      const content = `
+        <div id="invoice-print-area" class="invoice">
+          <div class="invoice__header">
+            <div>
+              <img src="../../assets/images/logo.svg" alt="Clinova" style="width:40px;margin-bottom:var(--sp-2);">
+              <div class="text-card-title">Clinova Healthcare</div>
+              <div class="text-caption">MG Road, Ernakulam, Kerala</div>
+            </div>
+            <div class="invoice__meta">
+              <h2 class="text-page-title" style="margin-bottom:var(--sp-1);">INVOICE</h2>
+              <div class="text-body-sm"><strong># ${bill.id}</strong></div>
+              <div class="text-caption">Date: ${Format.date(bill.createdAt)}</div>
+              <div style="margin-top:var(--sp-2);">${Badge.status(bill.status)}</div>
+            </div>
+          </div>
+          <div style="margin-bottom:var(--sp-6);">
+            <div class="text-caption">Bill To:</div>
+            <div class="text-body"><strong>${p.name}</strong> (${p.mrn})</div>
+            <div class="text-body-sm">${p.phone || ''}</div>
+          </div>
+          <table class="invoice__table">
+            <thead>
+              <tr>
+                <th>Description</th>
+                <th>Type</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${bill.items.map(i => `
+                <tr>
+                  <td>${i.description}</td>
+                  <td><span class="badge badge--neutral">${i.type.toUpperCase()}</span></td>
+                  <td>${Format.money(i.amount)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ${payHistory ? `<div style="margin-bottom:var(--sp-6);">
+            <div class="text-caption" style="margin-bottom:var(--sp-2);">Payments</div>
+            ${payHistory}
+          </div>` : ''}
+          <div class="invoice__summary">
+            <div class="invoice__summary-row">
+              <span>Subtotal:</span>
+              <span>${Format.money(bill.totalAmount)}</span>
+            </div>
+            <div class="invoice__summary-row">
+              <span>Amount Paid:</span>
+              <span>${Format.money(bill.paidAmount)}</span>
+            </div>
+            <div class="invoice__summary-row invoice__summary-row--total">
+              <span>Balance Due:</span>
+              <span style="color:var(--danger);">${Format.money(bill.status === 'CANCELLED' ? 0 : balance)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" onclick="window.print()">
+          <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-printer"></use></svg>
+          Print Invoice
+        </button>
+      `;
+
+      Modal.show({ title: `Invoice ${bill.id}`, content, size: 'lg', actions });
+    }
+
+    function showPaymentModal(id) {
+      const bill = billing.getById(id);
+      const balance = bill.totalAmount - bill.paidAmount;
+
+      const content = `
+        <form id="payment-form">
+          <div class="form-group">
+            <label class="form-group__label">Balance Due</label>
+            <div class="text-page-title" style="color:var(--danger);">${Format.money(balance)}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label">Amount to Pay (₹)</label>
+            <input type="number" class="form-input" id="pay-amount" value="${balance/100}" max="${balance/100}" min="1" step="0.01" required>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label">Payment Method</label>
+            <select class="form-input" id="pay-method" required>
+              <option value="UPI">UPI</option>
+              <option value="CARD">Credit/Debit Card</option>
+              <option value="CASH">Cash</option>
+            </select>
+          </div>
+        </form>
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="pay-cancel">Cancel</button>
+        <button class="btn btn--primary" id="pay-submit" form="payment-form">Receive Payment</button>
+      `;
+
+      const m = Modal.show({ title: 'Receive Payment', content, size: 'sm', actions });
+
+      document.getElementById('pay-cancel').addEventListener('click', m.close);
+      document.getElementById('payment-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const amtInput = document.getElementById('pay-amount');
+        if (!amtInput.checkValidity()) {
+          amtInput.reportValidity();
+          return;
+        }
+        const amtPaise = Math.round(parseFloat(amtInput.value) * 100);
+        const method = document.getElementById('pay-method').value;
+
+        try {
+          billing.receivePayment(bill.id, amtPaise, method, currentUser.staffId);
+          Toast.show('Payment received successfully.');
+          loadBills();
+          m.close();
+        } catch (err) {
+          Toast.show(err.message, 'error');
+        }
+      });
+    }
+  </script>
+</body>
+</html>

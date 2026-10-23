@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Alerts — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="./pharmacy.css">
+  <link rel="stylesheet" href="./pharmacy-chrome.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format } from '../../components/ui.js';
+    import { pharmacy } from '../../api/pharmacy.js';
+
+    let alertsTable;
+
+    initShell(['PHARMACIST', 'ADMIN'], () => {
+      const page = getPageContent();
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Stock Alerts</h1>
+            <p class="text-caption">Out of stock and low stock (valid, non-expired stock at or below the reorder level), expiring soon (90 days) and expired batches with remaining units.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4); display:flex; gap:var(--sp-3); align-items:center; flex-wrap:wrap;">
+            <div class="search-bar" style="max-width: 300px; margin: 0; flex:1;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="alert-search" placeholder="Search medicines...">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <select class="form-input" id="alert-filter">
+                <option value="">All Alerts</option>
+                <option value="OUT_OF_STOCK">Out of Stock</option>
+                <option value="LOW_STOCK">Low Stock</option>
+                <option value="EXPIRY">Expiring Soon</option>
+                <option value="EXPIRED">Expired</option>
+              </select>
+            </div>
+          </div>
+          <div id="alerts-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'name',    label: 'Medicine',   sortable: true,  render: r => `<strong>${r.name}</strong>` },
+        { key: 'type',    label: 'Alert Type', sortable: true,  render: r => {
+          if (r.type === 'OUT_OF_STOCK') {
+            return `<span style="color:var(--danger);font-weight:700;">OUT OF STOCK</span><br>
+              <span class="text-caption">Available: ${r.stockLevel} · Reorder Level: ${r.reorderLevel}</span>`;
+          } else if (r.type === 'LOW_STOCK') {
+            return `<span style="color:var(--warning-dark);font-weight:600;">LOW STOCK</span><br>
+              <span class="text-caption">Available: ${r.stockLevel} · Reorder Level: ${r.reorderLevel}</span>`;
+          } else if (r.type === 'EXPIRED') {
+            return `<span style="color:var(--danger);font-weight:700;">EXPIRED</span><br>
+              <span class="text-caption">Batch ${r.batchNo}: ${r.batchQty} units expired ${Format.date(r.expiryDate)}</span>`;
+          } else {
+            const daysLeft = Math.ceil((new Date(r.expiryDate) - new Date()) / (1000 * 60 * 60 * 24));
+            return `<span style="color:var(--warning-dark);font-weight:600;">Expiring Soon</span><br>
+              <span class="text-caption">Batch ${r.batchNo || ''}: ${r.batchQty} units expiring ${Format.date(r.expiryDate)} (${daysLeft}d)</span>`;
+          }
+        }},
+        { key: 'actions', label: '', width: '220px', render: r => {
+          const needsStock = r.type === 'OUT_OF_STOCK' || r.type === 'LOW_STOCK' || r.type === 'EXPIRED';
+          const createPO = needsStock
+            ? `<a href="purchases.html?medId=${r.id}" class="btn btn--primary btn--sm" style="margin-right:4px;">
+                <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-shopping-cart"></use></svg> Create PO
+              </a>`
+            : '';
+          // Opens that medicine's restock directly (Inventory verifies it exists first)
+          const restock = `<a href="inventory.html?restock=${r.id}" class="btn btn--secondary btn--sm">Restock</a>`;
+          return createPO + restock;
+        }}
+      ];
+
+      alertsTable = new DataTable('alerts-table', columns, [], { searchInputId: 'alert-search', defaultSort: 'severity' });
+      alertsTable.sortAsc = true;
+      loadAlerts();
+
+      document.getElementById('alert-filter').addEventListener('change', loadAlerts);
+    });
+
+    function loadAlerts() {
+      const filterType = document.getElementById('alert-filter')?.value || '';
+      let alerts = pharmacy.getStockAlerts();
+      if (filterType) alerts = alerts.filter(a => a.type === filterType);
+      alertsTable.updateData(alerts);
+    }
+  </script>
+  <script type="module" src="./pharmacy-shell.js"></script>
+</body>
+</html>

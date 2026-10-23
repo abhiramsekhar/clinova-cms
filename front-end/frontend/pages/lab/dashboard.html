@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab Dashboard — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { db } from '../../data/db.js';
+    import { DataTable, Format, Badge } from '../../components/ui.js';
+    import { reports } from '../../api/reports.js';
+
+    initShell(['LAB_TECH'], (session) => {
+      const page = getPageContent();
+      const stats = reports.getLabStats();
+
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Laboratory Dashboard</h1>
+            <p class="text-caption">Welcome back, ${Format.displayName(session.staffName, session.role)}</p>
+          </div>
+        </div>
+        
+        <div class="stat-row" style="margin-bottom:var(--sp-6);">
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--warning-light);color:var(--warning-dark);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-clock"></use></svg></div>
+            <div class="stat-card__value">${stats.pendingCount}</div>
+            <div class="stat-card__label">Pending Tests</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--primary-light);color:var(--primary);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-activity"></use></svg></div>
+            <div class="stat-card__value">${stats.inProgressCount}</div>
+            <div class="stat-card__label">In Progress</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--success-light);color:var(--success);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-check-circle"></use></svg></div>
+            <div class="stat-card__value">${stats.completedTodayCount}</div>
+            <div class="stat-card__label">Completed Today</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon" style="background:var(--danger-light);color:var(--danger);"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-alert-triangle"></use></svg></div>
+            <div class="stat-card__value">${stats.criticalTodayCount}</div>
+            <div class="stat-card__label">Critical Results (Today)</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header">
+            <span class="text-card-title">Active Test Queue Preview</span>
+          </div>
+          <div id="queue-table"></div>
+        </div>
+      `;
+
+      // Setup Table
+      const columns = [
+        { key: 'priority', label: 'Priority', width: '100px', sortable: true, render: r => Badge.priority(r.priority) },
+        { key: 'createdAt', label: 'Ordered', sortable: true, render: r => Format.time(r.createdAt.split('T')[1].slice(0,5)) },
+        { key: 'patientId', label: 'Patient', sortable: true, render: r => `<strong>${db.getById('patients', r.patientId).name}</strong>` },
+        { key: 'testId', label: 'Test', sortable: true, render: r => db.getById('labCatalog', r.testId).name },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) },
+        { key: 'actions', label: '', width: '80px', render: r => `<a href="test-queue.html" class="btn btn--primary btn--sm">Go</a>` }
+      ];
+
+      new DataTable('queue-table', columns, stats.queueList.slice(0, 10), { defaultSort: 'createdAt' });
+    });
+  </script>
+</body>
+</html>

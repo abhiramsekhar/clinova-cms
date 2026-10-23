@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Patient Profile — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+  <style>
+    .profile-header {
+      display: flex; gap: var(--sp-6); align-items: flex-start;
+      padding: var(--sp-6); background: white; border-radius: var(--radius-lg);
+      border: 1px solid var(--border); margin-bottom: var(--sp-6);
+      flex-wrap: wrap;
+    }
+    .profile-header__avatar {
+      width: 80px; height: 80px; background: var(--primary-light); color: var(--primary);
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 2rem; font-weight: 600; flex-shrink: 0;
+    }
+    .profile-header__info { flex: 1; min-width: 200px; }
+    .profile-header__meta {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: var(--sp-4); margin-top: var(--sp-4);
+    }
+    .meta-item__label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 2px; }
+    .meta-item__value { font-weight: 500; }
+    
+    .tabs { display: flex; gap: var(--sp-4); border-bottom: 1px solid var(--border); margin-bottom: var(--sp-6); overflow-x: auto; }
+    .tab { 
+      padding: var(--sp-3) var(--sp-2); cursor: pointer; border-bottom: 2px solid transparent; 
+      font-weight: 500; color: var(--muted); white-space: nowrap; 
+    }
+    .tab:hover { color: var(--text); }
+    .tab.is-active { color: var(--primary); border-bottom-color: var(--primary); }
+    
+    .tab-content { display: none; }
+    .tab-content.is-active { display: block; }
+
+    .allergy-banner {
+      background: var(--danger-light); color: var(--danger); padding: var(--sp-3) var(--sp-4);
+      border-radius: var(--radius-md); display: flex; align-items: center; gap: var(--sp-3);
+      font-weight: 500; margin-bottom: var(--sp-4);
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Modal, Toast } from '../../components/ui.js';
+    import { db } from '../../data/db.js';
+    import { laboratory } from '../../api/laboratory.js';
+    import { appointments } from '../../api/appointments.js';
+    import { billing } from '../../api/billing.js';
+
+    let currentUser;
+    let patientId;
+    let patient;
+
+    initShell(['ADMIN', 'DOCTOR', 'RECEPTIONIST'], (session) => {
+      currentUser = session;
+      const urlParams = new URLSearchParams(window.location.search);
+      patientId = urlParams.get('id');
+      
+      if (!patientId) {
+        getPageContent().innerHTML = `<div class="error-state">Patient ID missing.</div>`;
+        return;
+      }
+
+      patient = db.getById('patients', patientId);
+      if (!patient) {
+        getPageContent().innerHTML = `<div class="error-state">Patient not found.</div>`;
+        return;
+      }
+
+      const initials = patient.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+      const isDoctor = session.role === 'DOCTOR' || session.role === 'ADMIN';
+      const showBilling = session.role === 'RECEPTIONIST' || session.role === 'ADMIN';
+
+      const page = getPageContent();
+      page.innerHTML = `
+        <div style="margin-bottom:var(--sp-4);">
+          <button class="btn btn--ghost btn--sm" onclick="window.history.back()">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-arrow-left"></use></svg> Back
+          </button>
+        </div>
+
+        ${patient.allergies && patient.allergies.length > 0 ? `
+          <div class="allergy-banner">
+            <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-alert-triangle"></use></svg>
+            <div><strong>Allergies:</strong> ${patient.allergies.join(', ')}</div>
+          </div>
+        ` : ''}
+
+        <div class="profile-header">
+          <div class="profile-header__avatar">${initials}</div>
+          <div class="profile-header__info">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:var(--sp-4);">
+              <div>
+                <h1 class="text-page-title" style="margin-bottom:4px;">${patient.name}</h1>
+                <div class="text-caption">${patient.mrn}</div>
+              </div>
+              ${isDoctor ? `
+                <button class="btn btn--secondary" id="btn-order-lab">
+                  <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-flask"></use></svg>
+                  Order Lab Test
+                </button>
+              ` : ''}
+            </div>
+            
+            <div class="profile-header__meta">
+              <div>
+                <div class="meta-item__label">Age / Gender</div>
+                <div class="meta-item__value">${Format.age(patient.dateOfBirth)} yrs, ${patient.gender}</div>
+              </div>
+              <div>
+                <div class="meta-item__label">Blood Group</div>
+                <div class="meta-item__value">${patient.bloodGroup || '-'}</div>
+              </div>
+              <div>
+                <div class="meta-item__label">Phone</div>
+                <div class="meta-item__value">${patient.phone || '-'}</div>
+              </div>
+              ${patient.guardianName ? `
+                <div>
+                  <div class="meta-item__label">Guardian</div>
+                  <div class="meta-item__value">${patient.guardianName} (${patient.guardianPhone})</div>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+
+        <div class="tabs" id="profile-tabs">
+          <div class="tab is-active" data-target="tab-overview">Overview</div>
+          <div class="tab" data-target="tab-appointments">Appointments</div>
+          <div class="tab" data-target="tab-consultations">Consultations</div>
+          <div class="tab" data-target="tab-prescriptions">Prescriptions</div>
+          <div class="tab" data-target="tab-labs">Lab Results</div>
+          ${showBilling ? `<div class="tab" data-target="tab-billing">Billing</div>` : ''}
+        </div>
+
+        <div class="tab-content is-active" id="tab-overview">
+          <div class="card">
+            <div class="card__header"><span class="text-card-title">Patient Overview</span></div>
+            <div class="card__body">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4);">
+                <div>
+                  <h3 class="text-body-sm" style="color:var(--muted);margin-bottom:var(--sp-2);">Contact Info</h3>
+                  <p><strong>Email:</strong> ${patient.email || '-'}</p>
+                  <p><strong>Address:</strong> ${patient.address || '-'}</p>
+                </div>
+                <div>
+                  <h3 class="text-body-sm" style="color:var(--muted);margin-bottom:var(--sp-2);">Medical Profile</h3>
+                  <p><strong>Chronic Conditions:</strong> ${patient.chronicConditions && patient.chronicConditions.length ? patient.chronicConditions.join(', ') : 'None reported'}</p>
+                  <p><strong>Registered:</strong> ${Format.date(patient.createdAt)}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-appointments">
+          <div class="card">
+            <div id="table-appointments"></div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-consultations">
+          <div class="card">
+            <div id="table-consultations"></div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-prescriptions">
+          <div class="card">
+            <div id="table-prescriptions"></div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-labs">
+          <div class="card">
+            <div id="table-labs"></div>
+          </div>
+        </div>
+
+        ${showBilling ? `
+          <div class="tab-content" id="tab-billing">
+            <div class="card">
+              <div id="table-billing"></div>
+            </div>
+          </div>
+        ` : ''}
+      `;
+
+      // Tabs Logic
+      document.getElementById('profile-tabs').addEventListener('click', (e) => {
+        if (!e.target.classList.contains('tab')) return;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('is-active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('is-active'));
+        e.target.classList.add('is-active');
+        document.getElementById(e.target.dataset.target).classList.add('is-active');
+      });
+
+      // Render Tables
+      renderAppointments();
+      renderConsultations();
+      renderPrescriptions();
+      renderLabs();
+      if (showBilling) renderBilling();
+
+      // Order Lab Test Modal
+      if (isDoctor) {
+        document.getElementById('btn-order-lab').addEventListener('click', showOrderLabModal);
+      }
+    });
+
+    function renderAppointments() {
+      const data = db.getAll('appointments').filter(a => a.patientId === patientId);
+      const cols = [
+        { key: 'date', label: 'Date', sortable: true, render: r => Format.date(r.date) },
+        { key: 'time', label: 'Time', sortable: false, render: r => Format.time(r.time) },
+        { key: 'doctorId', label: 'Doctor', sortable: true, render: r => db.getById('staff', r.doctorId).name },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) }
+      ];
+      new DataTable('table-appointments', cols, data, { defaultSort: 'date' });
+    }
+
+    function renderConsultations() {
+      const data = db.getAll('consultations').filter(c => c.patientId === patientId);
+      const cols = [
+        { key: 'createdAt', label: 'Date', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'doctorId', label: 'Doctor', sortable: true, render: r => db.getById('staff', r.doctorId).name },
+        { key: 'diagnosis', label: 'Diagnosis', sortable: false, render: r => r.diagnosis || '-' },
+        { key: 'status', label: 'Status', sortable: false, render: r => r.isCompleted ? Badge.status('COMPLETED') : Badge.status('IN_PROGRESS') },
+        { key: 'actions', label: '', width: '80px', render: r => `
+          <a href="../doctor/consultation.html?id=${r.id}" class="btn btn--ghost btn--sm">View</a>
+        `}
+      ];
+      const table = new DataTable('table-consultations', cols, data, { defaultSort: 'createdAt' });
+      table.sortAsc = false; table.render();
+    }
+
+    function renderPrescriptions() {
+      const data = db.getAll('prescriptions').filter(p => p.patientId === patientId);
+      const cols = [
+        { key: 'createdAt', label: 'Date', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'doctorId', label: 'Doctor', sortable: true, render: r => db.getById('staff', r.doctorId).name },
+        { key: 'items', label: 'Items', sortable: false, render: r => r.items.length + ' medicines' },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) }
+      ];
+      const table = new DataTable('table-prescriptions', cols, data, { defaultSort: 'createdAt' });
+      table.sortAsc = false; table.render();
+    }
+
+    function renderLabs() {
+      const data = db.getAll('labOrders').filter(l => l.patientId === patientId);
+      const cols = [
+        { key: 'createdAt', label: 'Date', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'testId', label: 'Test', sortable: true, render: r => db.getById('labCatalog', r.testId).name },
+        { key: 'doctorId', label: 'Ordered By', sortable: true, render: r => db.getById('staff', r.doctorId).name },
+        { key: 'priority', label: 'Priority', sortable: true, render: r => Badge.priority(r.priority) },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) }
+      ];
+      const table = new DataTable('table-labs', cols, data, { defaultSort: 'createdAt' });
+      table.sortAsc = false; table.render();
+    }
+
+    function renderBilling() {
+      const data = db.getAll('bills').filter(b => b.patientId === patientId);
+      const cols = [
+        { key: 'createdAt', label: 'Date', sortable: true, render: r => Format.date(r.createdAt) },
+        { key: 'id', label: 'Invoice #', sortable: true },
+        { key: 'totalAmount', label: 'Amount', sortable: true, render: r => Format.money(r.totalAmount) },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) }
+      ];
+      const table = new DataTable('table-billing', cols, data, { defaultSort: 'createdAt' });
+      table.sortAsc = false; table.render();
+    }
+
+    // --- Order Lab Test (Standalone) ---
+    function showOrderLabModal() {
+      const tests = laboratory.getCatalog();
+      const content = `
+        <form id="standalone-lab-form" style="display:flex;flex-direction:column;gap:var(--sp-4);">
+          <div class="form-group">
+            <label class="form-group__label">Select Test *</label>
+            <select class="form-input" id="lab-test" required>
+              <option value="">Choose a test...</option>
+              ${tests.map(t => `<option value="${t.id}">${t.name} (${t.code})</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label">Priority</label>
+            <select class="form-input" id="lab-priority">
+              <option value="Routine">Routine</option>
+              <option value="Urgent">Urgent</option>
+              <option value="Stat">Stat (Immediate)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label">Clinical Reason / Notes</label>
+            <textarea class="form-input" id="lab-notes" rows="3" placeholder="Reason for this standalone order..."></textarea>
+          </div>
+        </form>
+      `;
+
+      const actions = `
+        <button class="btn btn--secondary" id="lab-cancel">Cancel</button>
+        <button class="btn btn--primary" id="lab-submit" form="standalone-lab-form">Order Test</button>
+      `;
+
+      const m = Modal.show({ title: 'Order Standalone Lab Test', content, size: 'md', actions });
+
+      document.getElementById('lab-cancel').addEventListener('click', m.close);
+      document.getElementById('standalone-lab-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const testId = document.getElementById('lab-test').value;
+        const priority = document.getElementById('lab-priority').value;
+        let notes = document.getElementById('lab-notes').value;
+
+        if (!testId) return;
+
+        try {
+          const recentConsult = db.getAll('consultations').filter(c => c.patientId === patientId && c.isCompleted).sort((a,b) => b.createdAt.localeCompare(a.createdAt))[0];
+          if (recentConsult) {
+            notes = `Consultation ${recentConsult.id}${notes ? '\n' + notes : ''}`;
+          }
+
+          laboratory.orderTest({
+            patientId: patientId,
+            doctorId: currentUser.staffId,
+            testId,
+            priority,
+            notes
+          });
+          Toast.show('Lab test ordered successfully.');
+          renderLabs();
+          if (document.getElementById('tab-billing')) renderBilling(); // A bill was generated
+          m.close();
+        } catch (err) {
+          Toast.show(err.message, 'error');
+        }
+      });
+    }
+  </script>
+</body>
+</html>

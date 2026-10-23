@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Staff Management — Clinova</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Modal, Toast, Badge } from '../../components/ui.js';
+    import { admin } from '../../api/admin.js';
+    import { db } from '../../data/db.js';
+
+    let table;
+
+    initShell(['ADMIN'], () => {
+      const page = getPageContent();
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Staff Management</h1>
+          </div>
+          <div class="page-header__actions">
+            <button class="btn btn--primary" id="btn-add">Add Staff</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="staff-search" placeholder="Search staff...">
+            </div>
+          </div>
+          <div id="staff-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'name', label: 'Name', sortable: true, render: r => `
+          <div style="display:flex; align-items:center; gap:var(--sp-3);">
+            ${r.avatarUrl ? `<img src="${r.avatarUrl}" alt="${r.name}" style="width:40px; height:40px; border-radius:50%; object-fit:cover;">` : `<div style="width:40px; height:40px; border-radius:50%; background:var(--bg-muted); display:flex; align-items:center; justify-content:center; font-weight:600;">${r.name.charAt(0)}</div>`}
+            <div>
+              <strong>${r.name}</strong><br><span class="text-caption">${r.email}</span>
+            </div>
+          </div>
+        ` },
+        { key: 'role', label: 'Role', sortable: true, render: r => r.role },
+        { key: 'departmentId', label: 'Department', sortable: true, render: r => r.departmentId ? db.getById('departments', r.departmentId).name : '-' },
+        { key: 'isActive', label: 'Status', sortable: true, render: r => r.isActive ? `<span class="badge badge--success">Active</span>` : `<span class="badge badge--danger">Inactive</span>` },
+        { key: 'actions', label: '', width: '150px', render: r => {
+          let html = `<button class="btn btn--secondary btn--sm btn-edit" data-id="${r.id}">Edit</button> `;
+          if (r.isActive) {
+            html += `<button class="btn btn--danger btn--sm btn-deact" data-id="${r.id}">Deactivate</button>`;
+          }
+          if (r.role === 'DOCTOR') {
+            html += `<div style="margin-top:4px;"><button class="btn btn--secondary btn--sm btn-sched" data-id="${r.id}" style="width:100%;">Schedule</button></div>`;
+          }
+          return html;
+        }}
+      ];
+
+      table = new DataTable('staff-table', columns, admin.listStaff(), { searchInputId: 'staff-search', defaultSort: 'name' });
+
+      document.getElementById('btn-add').addEventListener('click', () => showStaffForm());
+
+      document.getElementById('staff-table').addEventListener('click', e => {
+        const id = e.target.dataset.id;
+        if (e.target.closest('.btn-edit')) showStaffForm(id);
+        if (e.target.closest('.btn-deact')) handleDeactivate(id);
+        if (e.target.closest('.btn-sched')) showScheduleForm(id);
+      });
+    });
+
+    function showStaffForm(id = null) {
+      const staff = id ? db.getById('staff', id) : null;
+      const depts = db.getAll('departments');
+
+      const content = `
+        <form id="staff-form" class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Name</label>
+            <input type="text" class="form-input" name="name" required value="${staff ? staff.name : ''}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Email</label>
+            <input type="email" class="form-input" name="email" required value="${staff ? staff.email : ''}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Role</label>
+            <select class="form-select" name="role" required>
+              <option value="DOCTOR" ${staff && staff.role === 'DOCTOR' ? 'selected' : ''}>Doctor</option>
+              <option value="RECEPTIONIST" ${staff && staff.role === 'RECEPTIONIST' ? 'selected' : ''}>Receptionist</option>
+              <option value="PHARMACIST" ${staff && staff.role === 'PHARMACIST' ? 'selected' : ''}>Pharmacist</option>
+              <option value="LAB_TECH" ${staff && staff.role === 'LAB_TECH' ? 'selected' : ''}>Lab Technician</option>
+              <option value="ADMIN" ${staff && staff.role === 'ADMIN' ? 'selected' : ''}>Administrator</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Department (If Doctor)</label>
+            <select class="form-select" name="departmentId">
+              <option value="">None</option>
+              ${depts.map(d => `<option value="${d.id}" ${staff && staff.departmentId === d.id ? 'selected' : ''}>${d.name}</option>`).join('')}
+            </select>
+          </div>
+        </form>
+      `;
+
+      const m = Modal.show({
+        title: staff ? 'Edit Staff' : 'Add Staff',
+        content,
+        actions: `<button class="btn btn--secondary" id="staff-cancel">Cancel</button><button class="btn btn--primary" form="staff-form">Save</button>`
+      });
+
+      document.getElementById('staff-cancel').addEventListener('click', m.close);
+      document.getElementById('staff-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const data = Object.fromEntries(fd.entries());
+        if (!data.departmentId) data.departmentId = null;
+        if (id) data.id = id;
+
+        try {
+          admin.saveStaff(data);
+          Toast.show('Staff saved successfully');
+          table.updateData(admin.listStaff());
+          m.close();
+        } catch(err) { Toast.show(err.message, 'error'); }
+      });
+    }
+
+    function handleDeactivate(id) {
+      const staff = db.getById('staff', id);
+      let warningMsg = 'Are you sure? They will not be able to log in.';
+      
+      if (staff.role === 'DOCTOR') {
+        const now = new Date().toISOString();
+        const futureAppts = db.find('appointments', a => a.doctorId === id && a.date >= now.slice(0,10) && ['SCHEDULED', 'CHECKED_IN'].includes(a.status));
+        if (futureAppts.length > 0) {
+          warningMsg = `<div style="color:var(--danger);font-weight:600;margin-bottom:var(--sp-2);">Warning: This doctor has ${futureAppts.length} future/pending appointment(s).</div>` + warningMsg;
+        }
+      }
+
+      Modal.confirm({
+        title: 'Deactivate Staff',
+        message: warningMsg,
+        onConfirm: () => {
+          try {
+            admin.deactivateStaff(id);
+            Toast.show('Staff deactivated');
+            table.updateData(admin.listStaff());
+          } catch(err) { 
+            Modal.show({ title: 'Cannot Deactivate', content: `<div class="error-state">${err.message}</div>`, actions: `<button class="btn btn--secondary" onclick="document.querySelector('.modal-backdrop').remove()">Close</button>`});
+          }
+        }
+      });
+    }
+
+    function showScheduleForm(id) {
+      const staff = db.getById('staff', id);
+      const sched = staff.schedule || { workingDays: [1,2,3,4,5], startTime: '09:00', endTime: '17:00', slotDuration: 15 };
+
+      const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+      const content = `
+        <form id="sched-form">
+          <div class="form-group">
+            <label class="form-label">Working Days</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${days.map((d,i) => `
+                <label style="display:flex;align-items:center;gap:4px;">
+                  <input type="checkbox" name="days" value="${i}" ${sched.workingDays.includes(i) ? 'checked' : ''}> ${d.slice(0,3)}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Start Time</label>
+              <input type="time" class="form-input" name="startTime" value="${sched.startTime}" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">End Time</label>
+              <input type="time" class="form-input" name="endTime" value="${sched.endTime}" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Slot Duration (Mins)</label>
+              <input type="number" class="form-input" name="slotDuration" value="${sched.slotDuration}" required>
+            </div>
+          </div>
+        </form>
+      `;
+
+      const m = Modal.show({
+        title: `Edit Schedule: ${staff.name}`,
+        content,
+        actions: `<button class="btn btn--secondary" id="sched-cancel">Cancel</button><button class="btn btn--primary" form="sched-form">Save Schedule</button>`
+      });
+
+      document.getElementById('sched-cancel').addEventListener('click', m.close);
+      document.getElementById('sched-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const f = e.target;
+        const days = Array.from(f.querySelectorAll('input[name="days"]:checked')).map(cb => parseInt(cb.value));
+        const data = {
+          workingDays: days,
+          startTime: f.startTime.value,
+          endTime: f.endTime.value,
+          slotDuration: parseInt(f.slotDuration.value)
+        };
+        try {
+          admin.updateSchedule(id, data);
+          Toast.show('Schedule updated');
+          m.close();
+        } catch(err) { Toast.show(err.message, 'error'); }
+      });
+    }
+  </script>
+</body>
+</html>

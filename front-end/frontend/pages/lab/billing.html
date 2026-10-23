@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab Billing — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+  <style>
+    .receipt { padding: var(--sp-6); background: white; }
+    .receipt__header { display: flex; justify-content: space-between; gap: var(--sp-4); border-bottom: 2px solid var(--border); padding-bottom: var(--sp-4); margin-bottom: var(--sp-6); }
+    .receipt__meta { text-align: right; }
+    .receipt__table { width: 100%; border-collapse: collapse; margin-bottom: var(--sp-6); }
+    .receipt__table th { text-align: left; padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 500; font-size: 0.875rem; }
+    .receipt__table td { padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
+    .receipt__table th:last-child, .receipt__table td:last-child { text-align: right; }
+    .receipt__summary { width: 300px; max-width: 100%; margin-left: auto; }
+    .receipt__summary-row { display: flex; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-2) 0; }
+    .receipt__summary-row--total { font-weight: 700; font-size: 1.125rem; border-top: 2px solid var(--border); margin-top: var(--sp-2); padding-top: var(--sp-3); }
+
+    @page {
+      size: A4;
+      margin: 12mm;
+    }
+
+    @media print {
+      html, body { width: 100%; height: auto; margin: 0 !important; padding: 0 !important; background: white !important; }
+      body > * { display: none !important; }
+      body > .modal-overlay {
+        position: static !important;
+        display: block !important;
+        inset: auto !important;
+        width: 100% !important;
+        height: auto !important;
+        padding: 0 !important;
+        background: white !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+      }
+      .modal { width: 100%; max-width: none; max-height: none; margin: 0; transform: none; display: block; overflow: visible; box-shadow: none; }
+      .modal__header { display: none !important; }
+      .modal__body { padding: 0; overflow: visible; }
+      #receipt-print-area {
+        width: 100%;
+        padding: 0;
+        font-size: 10pt;
+        page-break-inside: avoid;
+        break-inside: avoid-page;
+      }
+      .receipt__header { margin-bottom: 12pt; padding-bottom: 10pt; }
+      .receipt__table { margin-bottom: 12pt; }
+      .receipt__table td { padding: 6pt 0; }
+      .receipt__summary-row { padding: 4pt 0; }
+      .receipt__summary-row--total { font-size: 12pt; }
+      .modal__close, .modal__footer { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Toast, Modal } from '../../components/ui.js';
+    import { billing } from '../../api/billing.js';
+    import { db } from '../../data/db.js';
+
+    let billTable;
+    let currentUser;
+
+    initShell(['LAB_TECH', 'ADMIN'], (session) => {
+      currentUser = session;
+      const page = getPageContent();
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Lab Billing & Receipts</h1>
+            <p class="text-caption">Collect payments for laboratory tests and print receipts as PDF.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4); display:flex; gap:var(--sp-4); flex-wrap:wrap;">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="bill-search" placeholder="Search invoice, patient, test...">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <select class="form-input" id="filter-status" aria-label="Filter bills by status">
+                <option value="">All Statuses</option>
+                <option value="UNPAID">Unpaid</option>
+                <option value="PARTIAL">Partial</option>
+                <option value="PAID">Paid</option>
+                <option value="CANCELLED">Cancelled</option>
+              </select>
+            </div>
+          </div>
+          <div id="bills-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'id', label: 'Invoice #', sortable: true, render: row => `<strong>${escapeHtml(row.id)}</strong>` },
+        { key: 'createdAt', label: 'Date', sortable: true, render: row => Format.date(row.createdAt) },
+        { key: 'patientName', label: 'Patient', sortable: true, render: row => `<strong>${escapeHtml(row.patientName)}</strong><br><span class="text-caption">${escapeHtml(row.patientMrn)}</span>` },
+        { key: 'testNames', label: 'Laboratory Tests', sortable: true, render: row => escapeHtml(row.testNames) },
+        { key: 'totalAmount', label: 'Amount', sortable: true, render: row => Format.money(row.totalAmount) },
+        { key: 'paidAmount', label: 'Paid', sortable: true, render: row => Format.money(row.paidAmount) },
+        { key: 'status', label: 'Status', sortable: true, render: row => Badge.status(row.status) },
+        { key: 'actions', label: '', width: '180px', render: row => `
+          ${row.paidAmount > 0 ? `<button class="btn btn--secondary btn--sm btn-receipt" data-id="${escapeHtml(row.id)}">Receipt</button>` : `<button class="btn btn--secondary btn--sm btn-view" data-id="${escapeHtml(row.id)}">View</button>`}
+          ${['UNPAID', 'PARTIAL'].includes(row.status) ? `<button class="btn btn--primary btn--sm btn-pay" data-id="${escapeHtml(row.id)}">Pay</button>` : ''}
+        ` }
+      ];
+
+      billTable = new DataTable('bills-table', columns, [], { searchInputId: 'bill-search', defaultSort: 'createdAt' });
+      billTable.sortAsc = false;
+      loadBills();
+
+      document.getElementById('filter-status').addEventListener('change', loadBills);
+      document.getElementById('bills-table').addEventListener('click', event => {
+        const target = event.target;
+        const receiptButton = target.closest('.btn-receipt');
+        if (receiptButton) return showReceipt(receiptButton.dataset.id);
+
+        const viewButton = target.closest('.btn-view');
+        if (viewButton) return showReceipt(viewButton.dataset.id);
+
+        const payButton = target.closest('.btn-pay');
+        if (payButton) return showPaymentModal(payButton.dataset.id);
+      });
+    });
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      })[character]);
+    }
+
+    function getLabBills(status) {
+      return billing.list(status ? { status } : {})
+        .filter(bill => bill.items.some(item => item.type === 'lab'))
+        .map(bill => {
+          const patient = db.getById('patients', bill.patientId);
+          return {
+            ...bill,
+            patientName: patient.name,
+            patientMrn: patient.mrn,
+            testNames: bill.items.filter(item => item.type === 'lab').map(item => item.description).join(', ')
+          };
+        });
+    }
+
+    function loadBills() {
+      const status = document.getElementById('filter-status').value;
+      billTable.updateData(getLabBills(status));
+    }
+
+    function showReceipt(id) {
+      const bill = billing.getById(id);
+      const patient = db.getById('patients', bill.patientId);
+      const payments = billing.paymentsFor(bill.id);
+      const latestPayment = payments[payments.length - 1];
+      const paymentHistory = payments.map(payment => `
+        <tr>
+          <td>${Format.datetime(payment.createdAt)}</td>
+          <td>${escapeHtml(payment.method)}</td>
+          <td>${payment.amount < 0 ? 'Refund' : 'Payment'}</td>
+          <td>${payment.amount < 0 ? '−' : ''}${Format.money(Math.abs(payment.amount))}</td>
+        </tr>
+      `).join('');
+      const items = bill.items.filter(item => item.type === 'lab');
+      const content = `
+        <div id="receipt-print-area" class="receipt">
+          <div class="receipt__header">
+            <div>
+              <img src="../../assets/images/logo.svg" alt="Clinova" style="width:40px;margin-bottom:var(--sp-2);">
+              <div class="text-card-title">Clinova Healthcare</div>
+              <div class="text-caption">MG Road, Ernakulam, Kerala</div>
+            </div>
+            <div class="receipt__meta">
+              <h2 class="text-page-title" style="margin-bottom:var(--sp-1);">${bill.paidAmount > 0 ? 'PAYMENT RECEIPT' : 'LAB INVOICE'}</h2>
+              <div class="text-body-sm"><strong>Invoice # ${escapeHtml(bill.id)}</strong></div>
+              ${latestPayment ? `<div class="text-caption">Payment date: ${Format.datetime(latestPayment.createdAt)}</div>` : `<div class="text-caption">Invoice date: ${Format.datetime(bill.createdAt)}</div>`}
+              <div style="margin-top:var(--sp-2);">${Badge.status(bill.status)}</div>
+            </div>
+          </div>
+          <div style="margin-bottom:var(--sp-6);">
+            <div class="text-caption">Patient:</div>
+            <div class="text-body"><strong>${escapeHtml(patient.name)}</strong> (${escapeHtml(patient.mrn)})</div>
+            <div class="text-body-sm">${escapeHtml(patient.phone || '')}</div>
+          </div>
+          <table class="receipt__table">
+            <thead><tr><th>Laboratory Test</th><th>Amount</th></tr></thead>
+            <tbody>
+              ${items.map(item => `<tr><td>${escapeHtml(item.description)}</td><td>${Format.money(item.amount)}</td></tr>`).join('')}
+            </tbody>
+          </table>
+          ${payments.length ? `
+            <div style="margin-bottom:var(--sp-6);">
+              <div class="text-caption" style="margin-bottom:var(--sp-2);">Payment History</div>
+              <table class="receipt__table">
+                <thead><tr><th>Date</th><th>Method</th><th>Type</th><th>Amount</th></tr></thead>
+                <tbody>${paymentHistory}</tbody>
+              </table>
+            </div>
+          ` : ''}
+          <div class="receipt__summary">
+            <div class="receipt__summary-row"><span>Total:</span><span>${Format.money(bill.totalAmount)}</span></div>
+            <div class="receipt__summary-row"><span>Amount paid:</span><span>${Format.money(bill.paidAmount)}</span></div>
+            <div class="receipt__summary-row receipt__summary-row--total">
+              <span>Balance due:</span>
+              <span>${Format.money(bill.status === 'CANCELLED' ? 0 : bill.totalAmount - bill.paidAmount)}</span>
+            </div>
+          </div>
+          <p class="text-caption" style="text-align:center;margin-top:var(--sp-6);">Thank you.</p>
+        </div>
+      `;
+      const actions = `<button class="btn btn--primary" id="print-receipt"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-printer"></use></svg> Print / Save as PDF</button>`;
+      const modal = Modal.show({ title: bill.paidAmount > 0 ? `Receipt ${bill.id}` : `Invoice ${bill.id}`, content, size: 'lg', actions });
+      document.getElementById('print-receipt').addEventListener('click', () => window.print());
+      return modal;
+    }
+
+    function showPaymentModal(id) {
+      const bill = billing.getById(id);
+      const balance = bill.totalAmount - bill.paidAmount;
+      const content = `
+        <form id="payment-form">
+          <div class="form-group">
+            <label class="form-group__label">Balance Due</label>
+            <div class="text-page-title" style="color:var(--danger);">${Format.money(balance)}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label" for="pay-amount">Amount to Pay (₹)</label>
+            <input type="number" class="form-input" id="pay-amount" value="${balance / 100}" max="${balance / 100}" min="0.01" step="0.01" required>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label" for="pay-method">Payment Method</label>
+            <select class="form-input" id="pay-method" required>
+              <option value="UPI">UPI</option>
+              <option value="CARD">Credit/Debit Card</option>
+              <option value="CASH">Cash</option>
+            </select>
+          </div>
+        </form>
+      `;
+      const actions = `
+        <button class="btn btn--secondary" id="pay-cancel">Cancel</button>
+        <button class="btn btn--primary" id="pay-submit" form="payment-form">Receive Payment</button>
+      `;
+      const modal = Modal.show({ title: 'Receive Lab Payment', content, size: 'sm', actions });
+      document.getElementById('pay-cancel').addEventListener('click', modal.close);
+      document.getElementById('payment-form').addEventListener('submit', event => {
+        event.preventDefault();
+        const amountInput = document.getElementById('pay-amount');
+        if (!amountInput.checkValidity()) {
+          amountInput.reportValidity();
+          return;
+        }
+        const amountPaise = Math.round(Number(amountInput.value) * 100);
+        const method = document.getElementById('pay-method').value;
+
+        try {
+          billing.receivePayment(bill.id, amountPaise, method, currentUser.staffId);
+          Toast.show('Payment received successfully.');
+          loadBills();
+          modal.close();
+          showReceipt(bill.id);
+        } catch (error) {
+          Toast.show(error.message, 'error');
+        }
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1000">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0D2F4A"/>
+      <stop offset="100%" stop-color="#123B5D"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="1000" fill="url(#bg)"/>
+  <!-- Abstract medical pulse lines -->
+  <g opacity="0.08" stroke="white" stroke-width="1.5" fill="none">
+    <polyline points="0,200 100,200 130,160 160,240 190,180 220,220 250,200 800,200"/>
+    <polyline points="0,400 150,400 180,360 210,440 240,380 270,420 300,400 800,400"/>
+    <polyline points="0,600 200,600 230,560 260,640 290,580 320,620 350,600 800,600"/>
+    <polyline points="0,800 80,800 110,760 140,840 170,780 200,820 230,800 800,800"/>
+  </g>
+  <!-- Subtle cross pattern -->
+  <g opacity="0.04" fill="white">
+    <rect x="350" y="100" width="12" height="36" rx="2"/>
+    <rect x="338" y="112" width="36" height="12" rx="2"/>
+    <rect x="600" y="450" width="10" height="30" rx="2"/>
+    <rect x="590" y="460" width="30" height="10" rx="2"/>
+    <rect x="150" y="700" width="14" height="42" rx="2"/>
+    <rect x="136" y="714" width="42" height="14" rx="2"/>
+    <rect x="650" y="750" width="8" height="24" rx="2"/>
+    <rect x="642" y="758" width="24" height="8" rx="2"/>
+  </g>
+</svg>

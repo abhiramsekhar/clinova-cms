@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Appointments — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+  <style>
+    /* Booking Flow Wizard Styles */
+    .wizard-steps { display:flex; gap:var(--sp-2); margin-bottom:var(--sp-4); }
+    .wizard-step { flex:1; height:4px; background:var(--border); border-radius:2px; }
+    .wizard-step.is-active { background:var(--primary); }
+    .wizard-panel { display:none; }
+    .wizard-panel.is-active { display:block; }
+    
+    .time-slot-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(92px, 1fr)); gap:var(--sp-2); }
+    .time-slot { 
+      padding:var(--sp-2); text-align:center; border:1px solid var(--border); 
+      border-radius:var(--radius-sm); cursor:pointer; font-size:0.875rem; 
+    }
+    .time-slot:hover:not(.is-disabled) { border-color:var(--primary); background:var(--primary-light); }
+    .time-slot.is-selected { background:var(--primary); color:white; border-color:var(--primary); }
+    .time-slot.is-disabled { opacity:0.5; cursor:not-allowed; background:var(--bg); }
+    .time-slot small { display:block; opacity:0.75; font-size:0.7rem; }
+    .mode-toggle { display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-2); margin-bottom:var(--sp-4); }
+    .mode-toggle .time-slot { padding:var(--sp-3); }
+    .info-box { padding:var(--sp-4); background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-md); margin-bottom:var(--sp-4); }
+    .info-row { display:flex; justify-content:space-between; padding:4px 0; }
+    .token-big { font-size:3rem; font-weight:700; line-height:1; color:var(--primary); }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Toast, Modal } from '../../components/ui.js';
+    import { appointments, todayStr } from '../../api/appointments.js';
+    import { billing } from '../../api/billing.js';
+    import { db } from '../../data/db.js';
+
+    let apptTable;
+    let currentUser;
+    let wizardModal;   // declared up here because the page start-up code can open the wizard
+    let bookData;
+
+    const safe = (fn, fallback = 'Unknown') => { try { return fn(); } catch (e) { return fallback; } };
+
+    initShell(['RECEPTIONIST', 'ADMIN'], (session) => {
+      currentUser = session;
+      const page = getPageContent();
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Appointments</h1>
+          </div>
+          <div class="page-header__actions">
+            <button class="btn btn--primary" id="btn-book">
+              <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-calendar-plus"></use></svg>
+              Book Appointment
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--sp-6);">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4); display:flex; gap:var(--sp-4); flex-wrap:wrap;">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="appt-search" placeholder="Search patient, doctor...">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <input type="date" class="form-input" id="filter-date" value="${todayStr()}">
+            </div>
+          </div>
+          <div id="appts-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'tokenNumber', label: 'Token', width:'80px', sortable: true, render: r => `<strong>#${r.tokenNumber}</strong>` },
+        { key: 'time', label: 'Time', width:'110px', sortable: true, render: r => `${Format.time(r.time)}${r.mode ? `<br><span class="text-caption">${r.mode === 'WALK_IN' ? 'Walk-in' : 'Prior booking'}</span>` : ''}` },
+        { key: 'patientId', label: 'Patient', sortable: true, render: r => {
+          const p = safe(() => db.getById('patients', r.patientId), { name: 'Unknown', mrn: '' });
+          return `<strong>${p.name}</strong><br><span class="text-caption">${p.mrn}</span>`;
+        }},
+        { key: 'doctorId', label: 'Doctor', sortable: true, render: r => {
+          const d = safe(() => db.getById('staff', r.doctorId), { name: 'Unknown', departmentId: null });
+          const dept = safe(() => db.getById('departments', d.departmentId), { name: '' });
+          return `${d.name}<br><span class="text-caption">${dept.name}</span>`;
+        }},
+        { key: 'fee', label: 'Fee', width:'110px', render: r => {
+          const b = appointments.getBill(r);
+          return b ? Badge.status(b.status) : '<span class="text-caption">-</span>';
+        }},
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) },
+        { key: 'actions', label: '', width: '230px', render: r => {
+          if (r.status !== 'SCHEDULED') return '';
+          const bill = appointments.getBill(r);
+          const unpaid = bill && bill.status !== 'PAID';
+          return `
+            ${unpaid
+              ? `<button class="btn btn--primary btn--sm btn-pay" data-id="${r.id}">Collect Fee</button>`
+              : `<button class="btn btn--ghost btn--sm btn-checkin" data-id="${r.id}">Check In</button>`}
+            <button class="btn btn--ghost btn--sm btn-noshow" data-id="${r.id}" title="Patient did not arrive">No-show</button>
+            <button class="btn btn--danger btn--sm btn--icon btn-cancel" data-id="${r.id}" title="Cancel"><svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-x"></use></svg></button>
+          `;
+        }}
+      ];
+
+      apptTable = new DataTable('appts-table', columns, [], { searchInputId: 'appt-search', defaultSort: 'time' });
+      loadAppointments();
+
+      document.getElementById('filter-date').addEventListener('change', loadAppointments);
+      document.getElementById('btn-book').addEventListener('click', () => showBookWizard());
+
+      document.getElementById('appts-table').addEventListener('click', (e) => {
+        const b = (sel) => e.target.closest(sel);
+        if (b('.btn-checkin')) return handleCheckIn(b('.btn-checkin').dataset.id);
+        if (b('.btn-pay'))     return handleCollectFee(b('.btn-pay').dataset.id);
+        if (b('.btn-noshow'))  return handleNoShow(b('.btn-noshow').dataset.id);
+        if (b('.btn-cancel'))  return handleCancel(b('.btn-cancel').dataset.id);
+      });
+
+      // Coming from the Patients page ("Book" button / after registration)
+      const pid = new URLSearchParams(location.search).get('patientId');
+      if (pid) {
+        history.replaceState(null, '', location.pathname);
+        showBookWizard(pid);
+      }
+    });
+
+    function loadAppointments() {
+      const date = document.getElementById('filter-date').value;
+      apptTable.updateData(appointments.list({ date }));
+    }
+
+    /* ── Check-in (blocked by the API until the fee is paid) ── */
+    function handleCheckIn(id) {
+      try {
+        appointments.updateStatus(id, 'CHECKED_IN');
+        Toast.show('Patient checked in.');
+        loadAppointments();
+      } catch (e) {
+        Toast.show(e.message, 'error');
+      }
+    }
+
+    /* ── Collect an unpaid consultation fee ── */
+    function handleCollectFee(id) {
+      const appt = appointments.getById(id);
+      const bill = appointments.getBill(appt);
+      if (!bill) return Toast.show('No consultation bill found for this appointment.', 'error');
+      const balance = bill.totalAmount - bill.paidAmount;
+
+      const content = `
+        <div class="info-box">
+          <div class="info-row"><span>Token</span><strong>#${appt.tokenNumber}</strong></div>
+          <div class="info-row"><span>Balance due</span><strong>${Format.money(balance)}</strong></div>
+        </div>
+        <div class="form-group">
+          <label class="form-group__label">Payment Method</label>
+          <select class="form-input" id="fee-method">
+            <option value="CASH">Cash</option><option value="UPI">UPI</option><option value="CARD">Credit/Debit Card</option>
+          </select>
+        </div>`;
+      const actions = `<button class="btn btn--secondary" id="fee-cancel">Cancel</button>
+                       <button class="btn btn--primary" id="fee-ok">Receive ${Format.money(balance)}</button>`;
+      const m = Modal.show({ title: 'Collect Consultation Fee', content, size: 'sm', actions });
+      document.getElementById('fee-cancel').addEventListener('click', m.close);
+      document.getElementById('fee-ok').addEventListener('click', () => {
+        try {
+          billing.receivePayment(bill.id, balance, document.getElementById('fee-method').value, currentUser.staffId);
+          Toast.show('Payment received. You can check the patient in now.');
+          m.close();
+          loadAppointments();
+        } catch (e) { Toast.show(e.message, 'error'); }
+      });
+    }
+
+    /* ── No-show: frees the slot so a walk-in can use it ── */
+    function handleNoShow(id) {
+      Modal.confirm({
+        title: 'Mark as No-show',
+        message: 'The patient did not arrive. The slot will be released for walk-in patients. The consultation fee is not refunded.',
+        confirmText: 'Mark No-show',
+        confirmStyle: 'danger',
+        onConfirm: () => {
+          // catch here so the dialog closes and the reason (e.g. "too early") shows as a message
+          try {
+            appointments.markNoShow(id, currentUser.staffName);
+            Toast.show('Marked as no-show. Slot released.');
+            loadAppointments();
+          } catch (e) {
+            Toast.show(e.message, 'error');
+          }
+        }
+      });
+    }
+
+    /* ── Cancel with reason (+ refund choice if the fee was paid) ── */
+    function handleCancel(id) {
+      const appt = appointments.getById(id);
+      const bill = appointments.getBill(appt);
+      const paid = bill && bill.paidAmount > 0 && bill.status !== 'CANCELLED';
+
+      const content = `
+        <div class="form-group">
+          <label class="form-group__label">Reason for cancellation *</label>
+          <textarea class="form-input" id="cancel-reason" rows="3"></textarea>
+        </div>
+        ${paid ? `<label style="display:flex;gap:var(--sp-2);align-items:center;">
+            <input type="checkbox" id="cancel-refund" checked>
+            Refund the paid consultation fee (${Format.money(bill.paidAmount)})
+          </label>` : ''}`;
+      const actions = `<button class="btn btn--secondary" id="cancel-back">Keep Appointment</button>
+                       <button class="btn btn--danger" id="cancel-ok">Cancel Appointment</button>`;
+      const m = Modal.show({ title: 'Cancel Appointment', content, size: 'sm', actions });
+      document.getElementById('cancel-back').addEventListener('click', m.close);
+      document.getElementById('cancel-ok').addEventListener('click', () => {
+        const reason = document.getElementById('cancel-reason').value.trim();
+        if (!reason) return Toast.show('Cancellation reason is required.', 'error');
+        try {
+          const refund = paid ? document.getElementById('cancel-refund').checked : true;
+          appointments.cancel(id, reason, currentUser.staffName, { refund });
+          Toast.show(paid && refund ? 'Appointment cancelled and fee refunded.' : 'Appointment cancelled.');
+          m.close();
+          loadAppointments();
+        } catch (e) { Toast.show(e.message, 'error'); }
+      });
+    }
+
+    /* ═════════════ Booking wizard ═════════════
+       1 Patient -> 2 Doctor -> 3 Walk-in / Prior + slot -> 4 Payment -> 5 Token */
+    function newBookData() {
+      return { patientId: null, doctorId: null, mode: 'WALK_IN', date: todayStr(), time: null, token: null, type: 'New Visit' };
+    }
+
+    function showBookWizard(preselectPatientId = null) {
+      bookData = newBookData();
+      const content = `
+        <div class="wizard-steps">
+          <div class="wizard-step is-active"></div><div class="wizard-step"></div>
+          <div class="wizard-step"></div><div class="wizard-step"></div>
+        </div>
+
+        <!-- 1: Patient -->
+        <div class="wizard-panel is-active" id="panel-1">
+          <p class="text-body-sm" style="margin-bottom:var(--sp-3);">Select the patient. New patient? <a class="text-link" href="patients.html">Register first</a> — you will be able to book right after paying the registration fee.</p>
+          <input type="text" class="form-input" id="wiz-patient-search" placeholder="Search name, MRN or phone...">
+          <div id="wiz-patient-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);margin-top:var(--sp-2);border-radius:var(--radius-sm);"></div>
+        </div>
+
+        <!-- 2: Doctor -->
+        <div class="wizard-panel" id="panel-2">
+          <p class="text-body-sm" style="margin-bottom:var(--sp-4);">Select a doctor. The consultation fee is shown for each doctor.</p>
+          <div id="wiz-doctor-list" style="display:flex;flex-direction:column;gap:var(--sp-2);"></div>
+        </div>
+
+        <!-- 3: Type + slot -->
+        <div class="wizard-panel" id="panel-3">
+          <div class="mode-toggle">
+            <div class="time-slot is-selected" data-mode="WALK_IN"><strong>Walk-in</strong><small>Patient is here now — first free slot</small></div>
+            <div class="time-slot" data-mode="PRIOR"><strong>Prior booking</strong><small>Patient chooses date and time</small></div>
+          </div>
+          <div id="walkin-box"></div>
+          <div id="prior-box" style="display:none;">
+            <div class="form-group">
+              <label class="form-group__label">Date</label>
+              <input type="date" class="form-input" id="wiz-date" min="${todayStr()}" value="${todayStr()}">
+            </div>
+            <div class="form-group">
+              <label class="form-group__label">Time Slot <span class="text-caption">(token number follows the time)</span></label>
+              <div class="time-slot-grid" id="wiz-slots"></div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-group__label">Visit Type</label>
+            <select class="form-input" id="wiz-type">
+              <option value="New Visit">New Visit</option>
+              <option value="Follow-up">Follow-up</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 4: Payment -->
+        <div class="wizard-panel" id="panel-4">
+          <div class="info-box" id="pay-summary"></div>
+          <div class="form-group">
+            <label class="form-group__label">Payment Method</label>
+            <select class="form-input" id="wiz-method">
+              <option value="CASH">Cash</option><option value="UPI">UPI</option><option value="CARD">Credit/Debit Card</option>
+            </select>
+          </div>
+          <p class="text-caption">The token is issued as soon as the payment is received.</p>
+        </div>
+
+        <!-- 5: Token -->
+        <div class="wizard-panel" id="panel-5" style="text-align:center;"></div>
+      `;
+      const actions = `
+        <button class="btn btn--secondary" id="wiz-back" style="visibility:hidden;">Back</button>
+        <button class="btn btn--primary" id="wiz-next" disabled>Next</button>
+      `;
+      wizardModal = Modal.show({ title: 'Book Appointment', content, actions, size: 'md' });
+      initWizard(preselectPatientId);
+    }
+
+    function initWizard(preselectPatientId) {
+      let step = 1;
+      const $ = (id) => document.getElementById(id);
+      const btnNext = $('wiz-next');
+      const btnBack = $('wiz-back');
+      const allPatients = db.getAll('patients').filter(p => p.isActive !== false);
+      const allDoctors = db.getAll('staff').filter(s => s.role === 'DOCTOR' && s.isActive);
+
+      /* Step 1: patients */
+      const pList = $('wiz-patient-list');
+      const renderPatients = (query = '') => {
+        const q = query.toLowerCase();
+        let list = allPatients.filter(p => p.name.toLowerCase().includes(q) || p.mrn.toLowerCase().includes(q) || (p.phone || '').includes(q));
+        if (bookData.patientId && !list.some(p => p.id === bookData.patientId)) {
+          list = [allPatients.find(p => p.id === bookData.patientId), ...list].filter(Boolean);
+        }
+        pList.innerHTML = list.slice(0, 15).map(p => `
+          <div class="time-slot ${p.id === bookData.patientId ? 'is-selected' : ''}" style="text-align:left;border:none;border-bottom:1px solid var(--border);border-radius:0;" data-id="${p.id}">
+            <strong>${p.name}</strong> <span class="text-caption">(${p.mrn})</span>
+          </div>`).join('') || '<div class="text-caption" style="padding:var(--sp-3);">No patient found.</div>';
+      };
+      $('wiz-patient-search').addEventListener('input', e => renderPatients(e.target.value));
+      pList.addEventListener('click', e => {
+        const row = e.target.closest('.time-slot');
+        if (!row) return;
+        bookData.patientId = row.dataset.id;
+        pList.querySelectorAll('.time-slot').forEach(el => el.classList.remove('is-selected'));
+        row.classList.add('is-selected');
+        btnNext.disabled = false;
+      });
+
+      /* Step 2: doctors */
+      const dList = $('wiz-doctor-list');
+      dList.innerHTML = allDoctors.map(d => {
+        const dept = safe(() => db.getById('departments', d.departmentId), { name: '' });
+        return `
+          <div class="time-slot" style="text-align:left;display:flex;align-items:center;gap:var(--sp-3);" data-id="${d.id}">
+            <div class="avatar avatar--sm">${d.name.split(' ').map(w => w[0]).join('').slice(0, 2)}</div>
+            <div style="flex:1;"><strong>${d.name}</strong><br><span class="text-caption">${dept.name}</span></div>
+            <strong>${Format.money(appointments.getConsultationFee(d.id))}</strong>
+          </div>`;
+      }).join('');
+      dList.addEventListener('click', e => {
+        const row = e.target.closest('.time-slot');
+        if (!row) return;
+        bookData.doctorId = row.dataset.id;
+        bookData.time = null; bookData.token = null;
+        dList.querySelectorAll('.time-slot').forEach(el => el.classList.remove('is-selected'));
+        row.classList.add('is-selected');
+        btnNext.disabled = false;
+      });
+
+      /* Step 3: walk-in / prior */
+      const refreshStep3 = () => {
+        const walk = bookData.mode === 'WALK_IN';
+        $('walkin-box').style.display = walk ? 'block' : 'none';
+        $('prior-box').style.display = walk ? 'none' : 'block';
+        document.querySelectorAll('.mode-toggle .time-slot').forEach(el => el.classList.toggle('is-selected', el.dataset.mode === bookData.mode));
+
+        if (walk) {
+          bookData.date = todayStr();
+          try {
+            const slot = appointments.nextWalkInSlot(bookData.doctorId);
+            bookData.time = slot.time; bookData.token = slot.token;
+            $('walkin-box').innerHTML = `
+              <div class="info-box" style="text-align:center;">
+                <div class="text-caption">Next free slot today</div>
+                <div class="text-page-title">${Format.time(slot.time)}</div>
+                <div class="text-body-sm">Token <strong>#${slot.token}</strong>${slot.freed ? ' · slot released by a no-show' : ''}</div>
+              </div>`;
+            btnNext.disabled = false;
+          } catch (err) {
+            bookData.time = null; bookData.token = null;
+            $('walkin-box').innerHTML = `<div class="info-box text-body-sm">${err.message}</div>`;
+            btnNext.disabled = true;
+          }
+        } else {
+          bookData.date = $('wiz-date').value;
+          renderSlots();
+          btnNext.disabled = !bookData.time;
+        }
+      };
+
+      const renderSlots = () => {
+        const date = $('wiz-date').value;
+        if (!date || !bookData.doctorId) return;
+        if (bookData.date !== date) { bookData.time = null; bookData.token = null; }
+        bookData.date = date;
+        const board = appointments.getSlotBoard(bookData.doctorId, date);
+        $('wiz-slots').innerHTML = board.map(s => {
+          const disabled = s.state !== 'free';
+          const sel = bookData.time === s.time ? 'is-selected' : '';
+          return `<div class="time-slot ${disabled ? 'is-disabled' : ''} ${sel}" data-time="${s.time}" data-token="${s.token}">${Format.time(s.time)}<small>${s.state === 'booked' ? 'Booked' : 'Token ' + s.token}</small></div>`;
+        }).join('');
+      };
+
+      document.querySelector('.mode-toggle').addEventListener('click', e => {
+        const el = e.target.closest('.time-slot');
+        if (!el) return;
+        bookData.mode = el.dataset.mode;
+        bookData.time = null; bookData.token = null;
+        refreshStep3();
+      });
+      $('wiz-date').addEventListener('change', () => { renderSlots(); btnNext.disabled = !bookData.time; });
+      $('wiz-slots').addEventListener('click', e => {
+        const slot = e.target.closest('.time-slot');
+        if (!slot || slot.classList.contains('is-disabled')) return;
+        bookData.time = slot.dataset.time;
+        bookData.token = Number(slot.dataset.token);
+        bookData.date = $('wiz-date').value;
+        $('wiz-slots').querySelectorAll('.time-slot').forEach(el => el.classList.remove('is-selected'));
+        slot.classList.add('is-selected');
+        btnNext.disabled = false;
+      });
+      $('wiz-type').addEventListener('change', e => bookData.type = e.target.value);
+
+      /* Step 4: summary */
+      const renderSummary = () => {
+        const p = db.getById('patients', bookData.patientId);
+        const d = db.getById('staff', bookData.doctorId);
+        const fee = appointments.getConsultationFee(bookData.doctorId);
+        $('pay-summary').innerHTML = `
+          <div class="info-row"><span>Patient</span><strong>${p.name} (${p.mrn})</strong></div>
+          <div class="info-row"><span>Doctor</span><strong>${d.name}</strong></div>
+          <div class="info-row"><span>Booking</span><strong>${bookData.mode === 'WALK_IN' ? 'Walk-in' : 'Prior booking'} · ${bookData.type}</strong></div>
+          <div class="info-row"><span>When</span><strong>${Format.date(bookData.date)}, ${Format.time(bookData.time)}</strong></div>
+          <div class="info-row"><span>Token</span><strong>#${bookData.token}</strong></div>
+          <div class="info-row" style="border-top:1px solid var(--border);margin-top:var(--sp-2);padding-top:var(--sp-2);"><span>Consultation fee</span><strong>${Format.money(fee)}</strong></div>`;
+      };
+
+      /* Navigation */
+      const showStep = (n) => {
+        step = n;
+        document.querySelectorAll('.wizard-step').forEach((el, i) => el.classList.toggle('is-active', i < Math.min(n, 4)));
+        document.querySelectorAll('.wizard-panel').forEach((el, i) => el.classList.toggle('is-active', i === n - 1));
+        btnBack.style.visibility = (n > 1 && n < 5) ? 'visible' : 'hidden';
+        btnNext.textContent = n === 3 ? 'Continue to Payment' : n === 4 ? 'Receive Payment & Get Token' : 'Next';
+        if (n === 1) { btnNext.disabled = !bookData.patientId; renderPatients($('wiz-patient-search').value); }
+        if (n === 2) btnNext.disabled = !bookData.doctorId;
+        if (n === 3) refreshStep3();
+        if (n === 4) { renderSummary(); btnNext.disabled = false; }
+      };
+
+      btnBack.addEventListener('click', () => { if (step > 1) showStep(step - 1); });
+
+      btnNext.addEventListener('click', () => {
+        if (step < 4) return showStep(step + 1);
+        if (step === 5) return;
+
+        // Step 4: pay + book in one go
+        try {
+          btnNext.disabled = true;
+          const method = $('wiz-method').value;
+          const { appointment, bill } = appointments.bookAndPay({
+            patientId: bookData.patientId,
+            doctorId: bookData.doctorId,
+            mode: bookData.mode,
+            date: bookData.date,
+            time: bookData.time,
+            type: bookData.type
+          }, { method }, currentUser.staffId);
+
+          const p = db.getById('patients', appointment.patientId);
+          const d = db.getById('staff', appointment.doctorId);
+          $('panel-5').innerHTML = `
+            <div class="text-caption">Token number</div>
+            <div class="token-big">#${appointment.tokenNumber}</div>
+            <div class="text-body" style="margin-top:var(--sp-3);"><strong>${p.name}</strong> (${p.mrn})</div>
+            <div class="text-body-sm">${d.name} · ${Format.date(appointment.date)}, ${Format.time(appointment.time)}</div>
+            <div class="text-body-sm" style="margin-top:var(--sp-2);">Fee ${Format.money(bill.totalAmount)} paid (${method}) · ${appointment.status === 'CHECKED_IN' ? 'Added to the doctor\'s queue' : 'Please check in on arrival'}</div>
+            <div style="margin-top:var(--sp-6);"><button class="btn btn--primary" id="wiz-done">Done</button></div>`;
+          showStep(5);
+          btnNext.style.display = 'none';
+          $('wiz-done').addEventListener('click', () => {
+            wizardModal.close();
+            document.getElementById('filter-date').value = appointment.date;
+            loadAppointments();
+          });
+          Toast.show(`Token #${appointment.tokenNumber} issued.`);
+        } catch (err) {
+          Toast.show(err.message, 'error');
+          btnNext.disabled = false;
+          // The free slot may have changed (another receptionist) -> go back and recompute
+          if (['SLOT_CHANGED', 'SLOT_UNAVAILABLE', 'NO_SLOT_AVAILABLE'].includes(err.code)) showStep(3);
+        }
+      });
+
+      /* Start */
+      renderPatients();
+      if (preselectPatientId && allPatients.some(p => p.id === preselectPatientId)) {
+        bookData.patientId = preselectPatientId;
+        renderPatients();
+        showStep(2);
+      }
+    }
+  </script>
+</body>
+</html>

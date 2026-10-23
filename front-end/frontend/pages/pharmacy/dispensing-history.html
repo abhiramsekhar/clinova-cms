@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dispensing History — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="./pharmacy.css">
+  <link rel="stylesheet" href="./pharmacy-chrome.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div id="ph-print-frame"></div>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Modal } from '../../components/ui.js';
+    import { db } from '../../data/db.js';
+
+    let histTable;
+
+    initShell(['PHARMACIST', 'ADMIN'], () => {
+      const page = getPageContent();
+
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Dispensing History</h1>
+          </div>
+          <div class="page-header__actions">
+            <button class="btn btn--secondary" id="btn-print-history">
+              🖨 Print List
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__header" style="padding: var(--sp-3) var(--sp-4);">
+            <div class="search-bar" style="max-width: 300px; margin: 0;">
+              <span class="search-bar__icon"><svg class="icon icon--sm" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-search"></use></svg></span>
+              <input type="text" class="search-bar__input" id="hist-search" placeholder="Search patient, medicine...">
+            </div>
+          </div>
+          <div id="hist-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'createdAt',   label: 'Date/Time',    sortable: true,  render: r => Format.datetime(r.createdAt) },
+        { key: 'patient',     label: 'Patient',       sortable: false, render: r => {
+          try {
+            const rx = db.getById('prescriptions', r.referenceId);
+            const p = db.getById('patients', rx.patientId);
+            return `<strong>${p.name}</strong><br><span class="text-caption">${p.mrn}</span>`;
+          } catch { return '—'; }
+        }},
+        { key: 'medicineId',  label: 'Medicine',      sortable: false, render: r => {
+          try { return db.getById('medicines', r.medicineId).name; } catch { return r.medicineId; }
+        }},
+        { key: 'quantity',    label: 'Qty',           sortable: true,  render: r => Math.abs(r.quantity) },
+        { key: 'performedBy', label: 'Dispensed By',  sortable: false, render: r => {
+          try { return db.getById('staff', r.performedBy).name; } catch { return r.performedBy; }
+        }},
+        { key: 'payment',     label: 'Payment',       sortable: false, render: r => {
+          try {
+            const rx = db.getById('prescriptions', r.referenceId);
+            const pay = rx.payment;
+            if (!pay) return '<span class="badge badge--neutral">—</span>';
+            const badgeClass = pay.status === 'PAID' ? 'badge--success' : 'badge--danger';
+            const method = pay.method ? ` · ${pay.method}` : '';
+            return `<span class="badge ${badgeClass}">${pay.status}</span><span class="text-caption">${method}</span>`;
+          } catch { return '—'; }
+        }},
+        { key: 'actions',     label: '', width: '100px', render: r => {
+          if (!r.referenceId) return '';
+          return `<button class="btn btn--secondary btn--sm btn-print-sl" data-rxid="${r.referenceId}">🖨 Receipt</button>`;
+        }}
+      ];
+
+      histTable = new DataTable('hist-table', columns, [], { searchInputId: 'hist-search', defaultSort: 'createdAt' });
+      histTable.sortAsc = false;
+
+      // Load DISPENSE entries grouped by prescription (avoid duplicates per Rx)
+      loadHistory();
+
+      document.getElementById('hist-table').addEventListener('click', e => {
+        const printBtn = e.target.closest('.btn-print-sl');
+        if (printBtn) printReceipt(printBtn.dataset.rxid);
+      });
+
+      document.getElementById('btn-print-history').addEventListener('click', printHistoryList);
+    });
+
+    function loadHistory() {
+      const history = db.getAll('stockLedger').filter(l => l.type === 'DISPENSE');
+      histTable.updateData(history);
+    }
+
+    /* Escape user-typed text before putting it into HTML */
+    const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    /* ── Print: Dispensing Receipt (from history row) ── */
+    function printReceipt(rxId) {
+      let rx;
+      try { rx = db.getById('prescriptions', rxId); } catch { return; }
+      let p, doc;
+      try { p = db.getById('patients', rx.patientId); } catch { p = { name: '—', mrn: '—' }; }
+      try { doc = db.getById('staff', rx.doctorId).name; } catch { doc = '—'; }
+      let dispensedByName = '—';
+      try { dispensedByName = db.getById('staff', rx.dispensedBy).name; } catch {}
+
+      const payInfo = rx.payment || {};
+
+      let rows = '', total = 0;
+      // Prefer the prices saved at dispense time so a later price change never alters an issued receipt
+      const stored = Array.isArray(rx.dispenseItems) && rx.dispenseItems.length ? rx.dispenseItems : null;
+      const lines = stored
+        ? stored.map((d, idx) => ({
+            name: d.name, dosage: rx.items[idx]?.dosage || '',
+            quantity: d.quantity, unitPrice: d.unitPrice, lineTotal: d.lineTotal
+          }))
+        : rx.items.map(item => {
+            let med = null;
+            try { med = db.getById('medicines', item.medicineId); } catch {}
+            const unitPrice = med ? (med.unitPrice || med.price || 0) : 0;
+            return {
+              name: item.name || (med?.name) || item.medicineId, dosage: item.dosage || '',
+              quantity: item.quantity, unitPrice, lineTotal: unitPrice * item.quantity
+            };
+          });
+      for (const l of lines) {
+        total += l.lineTotal;
+        rows += `<tr>
+          <td>${l.name}</td>
+          <td style="text-align:center;">${l.dosage}</td>
+          <td style="text-align:center;">${l.quantity}</td>
+          <td style="text-align:right;">${Format.money(l.unitPrice)}</td>
+          <td style="text-align:right;">${Format.money(l.lineTotal)}</td>
+        </tr>`;
+      }
+
+      const paySection = payInfo.status ? `
+        <div class="print-payment-section">
+          <strong>Payment:</strong> ${payInfo.status}
+          ${payInfo.method ? ` | Method: ${esc(payInfo.method)}` : ''}
+          ${payInfo.transactionRef ? ` | Ref: ${esc(payInfo.transactionRef)}` : ''}
+          ${payInfo.insurer ? ` | Insurer: ${esc(payInfo.insurer)}` : ''}
+          ${payInfo.claimNo ? ` | Claim: ${esc(payInfo.claimNo)}` : ''}
+          ${payInfo.amountReceived ? ` | Received: ₹${(payInfo.amountReceived / 100).toFixed(2)}` : ''}
+          ${typeof payInfo.balance === 'number' ? ` | Change: ₹${Math.max(0, payInfo.balance / 100).toFixed(2)}` : ''}
+        </div>
+      ` : '';
+
+      document.getElementById('ph-print-frame').innerHTML = `
+        <div class="print-header">
+          <div>
+            <div class="print-clinic-name">Clinova Healthcare</div>
+            <div class="print-doc-title">Dispensing Receipt</div>
+          </div>
+          <div style="text-align:right;">
+            <div><strong>Rx ID:</strong> ${rxId}</div>
+            <div><strong>Date:</strong> ${Format.date(rx.dispensedAt || rx.createdAt)}</div>
+          </div>
+        </div>
+        <div class="print-meta">
+          <div><strong>Patient:</strong> ${p.name}</div>
+          <div><strong>MRN:</strong> ${p.mrn}</div>
+          <div><strong>Doctor:</strong> ${doc}</div>
+          <div><strong>Dispensed By:</strong> ${dispensedByName}</div>
+        </div>
+        <table>
+          <thead><tr>
+            <th>Medicine</th>
+            <th style="text-align:center;">Dosage</th>
+            <th style="text-align:center;">Qty</th>
+            <th style="text-align:right;">Unit Price</th>
+            <th style="text-align:right;">Total</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td colspan="4" style="text-align:right;font-weight:700;border-top:1px solid #ccc;">Grand Total</td>
+            <td style="text-align:right;font-weight:700;border-top:1px solid #ccc;">${Format.money(total)}</td>
+          </tr></tfoot>
+        </table>
+        ${paySection}
+        <div class="print-footer">
+          Clinova Healthcare — Thank you. This is a computer-generated receipt.
+        </div>
+      `;
+      window.print();
+    }
+
+    /* ── Print: Full Dispensing History List ── */
+    function printHistoryList() {
+      const history = db.getAll('stockLedger').filter(l => l.type === 'DISPENSE');
+
+      const rows = history.map(r => {
+        let patName = '—', medName = '—', dispensedBy = '—', payStatus = '—';
+        try {
+          const rx = db.getById('prescriptions', r.referenceId);
+          const p = db.getById('patients', rx.patientId);
+          patName = `${p.name} (${p.mrn})`;
+          payStatus = rx.payment?.status || '—';
+        } catch {}
+        try { medName = db.getById('medicines', r.medicineId).name; } catch {}
+        try { dispensedBy = db.getById('staff', r.performedBy).name; } catch {}
+
+        return `<tr>
+          <td>${Format.datetime(r.createdAt)}</td>
+          <td>${patName}</td>
+          <td>${medName}</td>
+          <td style="text-align:center;">${Math.abs(r.quantity)}</td>
+          <td>${dispensedBy}</td>
+          <td>${payStatus}</td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('ph-print-frame').innerHTML = `
+        <div class="print-header">
+          <div>
+            <div class="print-clinic-name">Clinova Healthcare</div>
+            <div class="print-doc-title">Dispensing History Report</div>
+          </div>
+          <div style="text-align:right;">
+            <div>Printed: ${new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' })}</div>
+          </div>
+        </div>
+        <table>
+          <thead><tr>
+            <th>Date/Time</th>
+            <th>Patient</th>
+            <th>Medicine</th>
+            <th style="text-align:center;">Qty</th>
+            <th>Dispensed By</th>
+            <th>Payment</th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="6">No records found.</td></tr>'}</tbody>
+        </table>
+        <div class="print-footer">
+          Clinova Healthcare — Dispensing history as of ${new Date().toLocaleDateString('en-GB')}.
+        </div>
+      `;
+      window.print();
+    }
+  </script>
+  <script type="module" src="./pharmacy-shell.js"></script>
+</body>
+</html>

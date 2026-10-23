@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab Report — Clinova Healthcare</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+  <style>
+    @media print {
+      body { background: white; }
+      .sidebar, .sidebar-overlay, .header, .topbar, .page-header__actions { display: none !important; }
+      .main { margin: 0 !important; padding: 0 !important; border: none !important; }
+      .main__inner { padding: 0 !important; max-width: none !important; }
+      .card { border: none; box-shadow: none; margin: 0; }
+      .print-header { display: flex !important; }
+    }
+    .print-header { display: none; align-items: center; justify-content: space-between; border-bottom: 2px solid var(--primary); padding-bottom: var(--sp-4); margin-bottom: var(--sp-6); }
+    .report-block { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-6); margin-bottom: var(--sp-6); font-size: 0.875rem; border: 1px solid var(--border); padding: var(--sp-4); border-radius: var(--radius-md); }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { db } from '../../data/db.js';
+    import { Format } from '../../components/ui.js';
+    import { formatReferenceRange } from '../../api/laboratory.js';
+
+    initShell(['LAB_TECH', 'ADMIN', 'DOCTOR'], () => {
+      const page = getPageContent();
+      const params = new URLSearchParams(window.location.search);
+      const id = params.get('id');
+
+      if (!id) {
+        page.innerHTML = `<div class="error-state">No order ID specified.</div>`;
+        return;
+      }
+
+      const order = db.getById('labOrders', id);
+      if (!order || order.status !== 'COMPLETED') {
+        page.innerHTML = `<div class="error-state">Report not found or not finalized.</div>`;
+        return;
+      }
+
+      const patient = db.getById('patients', order.patientId);
+      const doctor = db.getById('staff', order.doctorId);
+      const test = db.getById('labCatalog', order.testId);
+      const tech = db.getById('staff', order.technicianId);
+
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Finalised Report</h1>
+          </div>
+          <div class="page-header__actions">
+            <button class="btn btn--secondary" onclick="window.history.back()">Back</button>
+            <button class="btn btn--primary" onclick="window.print()">
+              <svg class="icon" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-printer"></use></svg> Print Report
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="padding: var(--sp-6);">
+          <!-- Print Header -->
+          <div class="print-header">
+            <div>
+              <div style="font-size:1.5rem;font-weight:bold;color:var(--primary);display:flex;align-items:center;gap:8px;">
+                <svg class="icon icon--lg" aria-hidden="true"><use href="../../assets/icons/sprite.svg#icon-activity"></use></svg> Clinova Healthcare
+              </div>
+              <div class="text-caption">123 Health Ave, Medical District<br>Tel: +1 (555) 123-4567</div>
+            </div>
+            <div style="text-align:right;">
+              <h2 style="font-size:1.25rem;font-weight:600;">LABORATORY REPORT</h2>
+              <div class="text-caption">Date: ${Format.date(order.completedAt)}</div>
+            </div>
+          </div>
+
+          <!-- Patient Block -->
+          <div class="report-block">
+            <div>
+              <div style="margin-bottom:4px;"><strong>Patient Name:</strong> ${patient.name}</div>
+              <div style="margin-bottom:4px;"><strong>MRN:</strong> ${patient.mrn}</div>
+              <div style="margin-bottom:4px;"><strong>Age / Sex:</strong> ${Format.age(patient.dateOfBirth)} yrs / ${patient.gender}</div>
+            </div>
+            <div>
+              <div style="margin-bottom:4px;"><strong>Referred By:</strong> ${Format.displayName(doctor.name, 'DOCTOR')}</div>
+              <div style="margin-bottom:4px;"><strong>Sample Collected:</strong> ${Format.datetime(order.sampleCollectedAt)}</div>
+              <div style="margin-bottom:4px;"><strong>Reported:</strong> ${Format.datetime(order.completedAt)}</div>
+            </div>
+          </div>
+
+          <h3 style="text-align:center; margin-bottom:var(--sp-4); text-decoration:underline;">TEST: ${test.name}</h3>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr style="background:var(--bg-muted);">
+                <th style="padding:var(--sp-3); text-align:left;">Investigation</th>
+                <th style="padding:var(--sp-3); text-align:left;">Result</th>
+                <th style="padding:var(--sp-3); text-align:left;">Reference Range</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${order.results.map(r => `
+                <tr>
+                  <td style="padding:var(--sp-3); border-top:1px solid var(--border);">${r.parameter}</td>
+                  <td style="padding:var(--sp-3); border-top:1px solid var(--border); ${r.isAbnormal ? 'font-weight:bold;' : ''} ${r.flag === 'Critical' ? 'color:red;' : (r.isAbnormal ? 'color:var(--primary);' : '')}">
+                    ${r.value} ${r.unit} 
+                    ${r.isAbnormal ? `<sup>${r.flag === 'High' ? '↑' : (r.flag==='Low' ? '↓' : '*')}</sup>` : ''}
+                  </td>
+                  <td style="padding:var(--sp-3); border-top:1px solid var(--border);" class="text-caption">${formatReferenceRange(test.parameters.find(param => param.name === r.parameter)) || r.referenceRange || 'Not specified'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+          <div style="margin-top:var(--sp-8); display:flex; justify-content:space-between; align-items:flex-end;">
+            <div class="text-caption">
+              End of Report.<br>
+              Generated by Clinova LIS.
+            </div>
+            <div style="text-align:center;">
+              <div style="border-bottom:1px solid var(--text); width:150px; margin-bottom:4px;"></div>
+              <div style="font-weight:600; font-size:0.875rem;">${tech.name}</div>
+              <div class="text-caption">Laboratory Technologist</div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+  </script>
+</body>
+</html>

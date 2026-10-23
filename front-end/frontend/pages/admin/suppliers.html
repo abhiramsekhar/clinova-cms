@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Suppliers & Purchasing Oversight — Clinova</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Format, Badge, Modal } from '../../components/ui.js';
+    import { db } from '../../data/db.js';
+
+    initShell(['ADMIN'], () => {
+      const page = getPageContent();
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Pharmacy Suppliers & POs</h1>
+            <p class="text-caption">Read-only oversight of suppliers and purchase orders.</p>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:var(--sp-6);">
+          <div class="card">
+            <div class="card__header"><span class="text-card-title">Supplier Directory</span></div>
+            <div id="supp-table"></div>
+          </div>
+
+          <div class="card">
+            <div class="card__header"><span class="text-card-title">Purchase Order History</span></div>
+            <div id="po-table"></div>
+          </div>
+        </div>
+      `;
+
+      // Suppliers Table
+      const suppCols = [
+        { key: 'name', label: 'Supplier Name', sortable: true, render: r => `<strong>${r.name}</strong>` },
+        { key: 'contactPerson', label: 'Contact', sortable: true },
+        { key: 'phone', label: 'Phone', sortable: false },
+        { key: 'email', label: 'Email', sortable: false },
+        { key: 'typicalMedicines', label: 'Medicines Supplied', sortable: false, render: r => {
+          if (!r.typicalMedicines || !r.typicalMedicines.length) return '-';
+          return `<div style="display:flex; flex-wrap:wrap; gap:4px;">${r.typicalMedicines.map(mId => {
+            try {
+              return `<span class="badge badge--info" style="font-size:0.7rem; padding: 2px 6px;">${db.getById('medicines', mId).name}</span>`;
+            } catch (e) { return ''; }
+          }).join('')}</div>`;
+        }}
+      ];
+      new DataTable('supp-table', suppCols, db.getAll('suppliers'), { defaultSort: 'name' });
+
+      // PO Table
+      const poCols = [
+        { key: 'id', label: 'PO #', sortable: true, render: r => `<strong>${r.id}</strong>` },
+        { key: 'date', label: 'Date', sortable: true, render: r => Format.date(r.createdAt.split('T')[0]) },
+        { key: 'supplierId', label: 'Supplier', sortable: true, render: r => db.getById('suppliers', r.supplierId).name },
+        { key: 'items', label: 'Items', sortable: false, render: r => r.items.length + ' item(s)' },
+        { key: 'totalValue', label: 'Value', sortable: true, render: r => Format.money(r.totalValue) },
+        { key: 'status', label: 'Status', sortable: true, render: r => Badge.status(r.status) },
+        { key: 'actions', label: '', width: '100px', render: r => `<button class="btn btn--secondary btn--sm btn-view" data-id="${r.id}">View</button>` }
+      ];
+      const poTable = new DataTable('po-table', poCols, db.getAll('purchaseOrders'), { defaultSort: 'createdAt' });
+      poTable.sortAsc = false;
+      poTable.render();
+
+      document.getElementById('po-table').addEventListener('click', e => {
+        if (e.target.closest('.btn-view')) {
+          const po = db.getById('purchaseOrders', e.target.closest('.btn-view').dataset.id);
+          const supp = db.getById('suppliers', po.supplierId);
+          
+          const content = `
+            <div style="margin-bottom:var(--sp-4);">
+              <strong>Supplier:</strong> ${supp.name}
+            </div>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="padding:var(--sp-2); text-align:left;">Medicine</th>
+                  <th style="padding:var(--sp-2); text-align:right;">Ordered</th>
+                  <th style="padding:var(--sp-2); text-align:right;">Received</th>
+                  <th style="padding:var(--sp-2); text-align:right;">Unit Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${po.items.map(i => `
+                  <tr>
+                    <td style="padding:var(--sp-2); border-top:1px solid var(--border);">${db.getById('medicines', i.medicineId).name}</td>
+                    <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">${i.quantityOrdered}</td>
+                    <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">${i.quantityReceived}</td>
+                    <td style="padding:var(--sp-2); border-top:1px solid var(--border); text-align:right;">${Format.money(i.unitCost)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+          `;
+          Modal.show({ title: `Purchase Order ${po.id}`, content, size: 'md' });
+        }
+      });
+    });
+  </script>
+</body>
+</html>

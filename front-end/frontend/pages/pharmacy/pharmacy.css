@@ -1,0 +1,177 @@
+/**
+ * Clinova Healthcare — Pharmacy Module CSS
+ * Scoped styles for inline validation and print views.
+ * DO NOT add or override any shared theme variables here.
+ */
+
+/* ─── Inline Validation ─────────────────────────── */
+.field-error {
+  color: var(--danger);
+  font-size: 0.75rem;
+  margin-top: 4px;
+  display: none;
+}
+.form-group.has-error .form-input,
+.form-group.has-error select.form-input,
+.form-group.has-error textarea.form-input {
+  border-color: var(--danger);
+  outline-color: var(--danger);
+}
+.form-group.has-error .field-error {
+  display: block;
+}
+.form-group.has-success .form-input {
+  border-color: var(--success);
+}
+
+/* ─── PO Item List ──────────────────────────────── */
+.po-item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  margin-bottom: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, #fafafa);
+}
+.po-item-row:last-child { margin-bottom: 0; }
+.po-total-bar {
+  background: var(--primary-light);
+  color: var(--primary);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--sp-2);
+}
+
+/* ─── Supplier Rates Table ──────────────────────── */
+.rate-row {
+  display: grid;
+  grid-template-columns: 1fr 120px 40px;
+  gap: var(--sp-2);
+  align-items: center;
+  margin-bottom: var(--sp-2);
+}
+.rate-row:last-child { margin-bottom: 0; }
+
+/* ─── Payment Section ───────────────────────────── */
+.payment-section {
+  border-top: 2px solid var(--border);
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+}
+.payment-method-fields {
+  display: none;
+}
+.payment-method-fields.visible {
+  display: block;
+}
+.payment-balance-display {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: var(--sp-2);
+}
+.payment-balance-display.positive { color: var(--success); }
+.payment-balance-display.negative { color: var(--danger); }
+
+/* ─── Restock / PO Info Banner ──────────────────── */
+.expired-purge-banner,
+.po-notice {
+  background: var(--warning-light);
+  color: var(--warning-dark);
+  border: 1px solid var(--warning-dark);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  font-size: 0.85rem;
+}
+
+/* ─── Print Styles ──────────────────────────────── */
+@media print {
+  /* Hide everything except the print frame */
+  body > * { display: none !important; }
+  #ph-print-frame { display: block !important; }
+
+  #ph-print-frame {
+    font-family: 'Inter', Arial, sans-serif;
+    font-size: 12px;
+    color: #111;
+    padding: 20mm;
+    max-width: 210mm;
+    margin: 0 auto;
+  }
+
+  #ph-print-frame .print-header {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 2px solid #222;
+    padding-bottom: 8px;
+    margin-bottom: 16px;
+  }
+  #ph-print-frame .print-clinic-name {
+    font-size: 18px;
+    font-weight: 700;
+  }
+  #ph-print-frame .print-doc-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #444;
+  }
+  #ph-print-frame .print-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 16px;
+    margin-bottom: 16px;
+    font-size: 11px;
+  }
+  #ph-print-frame table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+  }
+  #ph-print-frame th {
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 11px;
+  }
+  #ph-print-frame td {
+    border: 1px solid #ccc;
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+  #ph-print-frame .print-total {
+    text-align: right;
+    font-weight: 700;
+    font-size: 13px;
+    margin-top: 8px;
+  }
+  #ph-print-frame .print-payment-section {
+    border-top: 1px solid #ccc;
+    margin-top: 12px;
+    padding-top: 8px;
+    font-size: 11px;
+  }
+  #ph-print-frame .print-footer {
+    margin-top: 20px;
+    border-top: 1px solid #ccc;
+    padding-top: 8px;
+    font-size: 10px;
+    color: #666;
+    text-align: center;
+  }
+  #ph-print-frame .no-print { display: none !important; }
+
+  /* Hide sidebar, topbar, modals, toast */
+  .sidebar, .topbar, .modal-overlay, .toast-container,
+  .page-header__actions, .btn-print { display: none !important; }
+}
+
+/* Print frame hidden by default (screen) */
+#ph-print-frame {
+  display: none;
+}

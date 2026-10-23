@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Departments — Clinova</title>
+  <link rel="icon" type="image/svg+xml" href="../../assets/images/favicon.svg">
+  <link rel="stylesheet" href="../../assets/css/variables.css">
+  <link rel="stylesheet" href="../../assets/css/reset.css">
+  <link rel="stylesheet" href="../../assets/css/typography.css">
+  <link rel="stylesheet" href="../../assets/css/layout.css">
+  <link rel="stylesheet" href="../../assets/css/components.css">
+  <link rel="stylesheet" href="../../assets/css/forms.css">
+  <link rel="stylesheet" href="../../assets/css/tables.css">
+  <link rel="stylesheet" href="../../assets/css/utilities.css">
+  <link rel="stylesheet" href="../../assets/css/responsive.css">
+  <link rel="stylesheet" href="../../assets/css/glass.css">
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <script type="module">
+    import { initShell, getPageContent } from '../../components/app-shell.js';
+    import { DataTable, Modal, Toast, Format } from '../../components/ui.js';
+    import { admin } from '../../api/admin.js';
+    import { db } from '../../data/db.js';
+
+    let table;
+
+    initShell(['ADMIN'], () => {
+      const page = getPageContent();
+      
+      page.innerHTML = `
+        <div class="page-header">
+          <div class="page-header__info">
+            <h1 class="text-page-title">Departments</h1>
+          </div>
+        </div>
+
+        <div class="card">
+          <div id="dept-table"></div>
+        </div>
+      `;
+
+      const columns = [
+        { key: 'name', label: 'Department Name', sortable: true, render: r => `<strong>${r.name}</strong>` },
+        { key: 'code', label: 'Code', sortable: true },
+        { key: 'headDoctorId', label: 'Head Doctor', sortable: true, render: r => {
+          try {
+            return db.getById('staff', r.headDoctorId).name;
+          } catch(e) { return '-'; }
+        }},
+        { key: 'defaultFee', label: 'Consultation Fee', sortable: true, render: r => Format.money(r.defaultFee) },
+        { key: 'isBookable', label: 'Bookable', sortable: true, render: r => r.isBookable ? '<span class="badge badge--success">Yes</span>' : '<span class="badge badge--danger">No</span>' },
+        { key: 'isActive', label: 'Status', sortable: true, render: r => r.isActive ? '<span class="badge badge--success">Active</span>' : '<span class="badge badge--danger">Inactive</span>' },
+        { key: 'actions', label: '', width: '100px', render: r => `<button class="btn btn--secondary btn--sm btn-edit" data-id="${r.id}">Edit</button>` }
+      ];
+
+      table = new DataTable('dept-table', columns, admin.listDepartments());
+
+      document.getElementById('dept-table').addEventListener('click', e => {
+        const id = e.target.dataset.id;
+        if (e.target.closest('.btn-edit')) {
+          const dept = db.getById('departments', id);
+          const content = `
+            <form id="dept-form">
+              <div class="form-group">
+                <label class="form-label">Consultation Fee (₹)</label>
+                <input type="number" class="form-input" name="fee" value="${dept.defaultFee / 100}" required>
+              </div>
+              <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;">
+                  <input type="checkbox" name="isBookable" ${dept.isBookable ? 'checked' : ''}>
+                  Allow Patient Bookings
+                </label>
+              </div>
+            </form>
+          `;
+          const m = Modal.show({
+            title: `Edit ${dept.name}`,
+            content,
+            actions: `<button class="btn btn--secondary" id="dept-cancel">Cancel</button><button class="btn btn--primary" form="dept-form">Save</button>`
+          });
+
+          document.getElementById('dept-cancel').addEventListener('click', m.close);
+          document.getElementById('dept-form').addEventListener('submit', ev => {
+            ev.preventDefault();
+            const f = ev.target;
+            admin.updateDepartment(id, { defaultFee: parseInt(f.fee.value) * 100, isBookable: f.isBookable.checked });
+            Toast.show('Department updated');
+            table.updateData(admin.listDepartments());
+            m.close();
+          });
+        }
+      });
+    });
+  </script>
+</body>
+</html>
