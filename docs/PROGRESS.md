@@ -1,8 +1,8 @@
 # Project Progress & Implementation Status
 
 ## Current Phase: Phase 1 (Backend API)
-**Last Completed Step**: Step 1 (API tests for 1d groups: reception, doctor, pharmacy, lab, admin - 43 tests passing)  
-**Next Step**: Step 2 (seed_demo [--reset] verification)
+**Last Completed Step**: Step 2 (seed_demo [--reset] verification & loading)  
+**Next Step**: Step 3 (Business rules with tests)
 
 ---
 
@@ -72,6 +72,12 @@
   - Ran `manage.py test` across all apps: 43 tests executed and passed (0 errors, 0 failures).
   - Validated list/create/retrieve/update for allowed roles, 403 for other roles, 401 unauthenticated, and money as integer paise.
 
+### Step 2 (Completed): seed_demo [--reset]
+- **Verification & Execution**: Verified `python manage.py seed_demo --reset` and idempotent `python manage.py seed_demo`.
+- **Table Integrity**: Verified `--reset` truncates only the 24 application tables (never touches `auth_*` or `django_*`).
+- **Entity Coverage**: Complete set of entities from `seed.js` loaded with exact frontend ID schemes and Django-hashed passwords.
+- **Credential Summary**: Correctly outputs demo logins table for all 5 roles.
+
 ---
 
 ## Architectural Decisions & Invariants
@@ -91,7 +97,6 @@
 ---
 
 ## Next Steps
-- **Step 2**: `seed_demo [--reset]`: Verify/run source of truth from `seed.js`, non-destructive by default, `--reset` clears only app tables, prints demo logins.
 - **Step 3**: Business rules with tests: appointment double-booking check with `select_for_update`, book-and-pay, consultation complete & lock + addendum, prescription FEFO dispense & stock ledger, lab order critical alert, IdSequence, AuditLog.
 - **Step 4**: `docs/smoke_test.md`: curl/PowerShell commands and live validation.
 
