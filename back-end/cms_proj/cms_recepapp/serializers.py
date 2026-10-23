@@ -13,6 +13,7 @@ Doctor identifiers over the wire match Staff.staff_id (e.g. staff-doc-01).
 import datetime
 from decimal import Decimal
 from rest_framework import serializers
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -314,6 +315,29 @@ class AppointmentSerializer(serializers.ModelSerializer):
             dept = Department.objects.filter(pk=dept_id).first()
             if dept:
                 attrs["department"] = dept
+
+        # Double-booking check (same doctor + date + time_slot, status SCHEDULED/COMPLETED/CHECKED_IN/IN_PROGRESS)
+        doc = attrs.get("doctor") or (self.instance.doctor if self.instance else None)
+        adate = attrs.get("appointment_date") or (self.instance.appointment_date if self.instance else None)
+        aslot = attrs.get("time_slot") or (self.instance.time_slot if self.instance else None)
+        if doc and adate and aslot:
+            conflict_qs = Appointment.objects.select_for_update().filter(
+                doctor=doc,
+                appointment_date=adate,
+                time_slot=aslot,
+                status__in=[
+                    Appointment.Status.SCHEDULED,
+                    Appointment.Status.CHECKED_IN,
+                    Appointment.Status.IN_PROGRESS,
+                    Appointment.Status.COMPLETED,
+                ],
+            )
+            if self.instance:
+                conflict_qs = conflict_qs.exclude(pk=self.instance.pk)
+            if conflict_qs.exists():
+                raise serializers.ValidationError(
+                    {"time": "This time slot is already booked for the selected doctor.", "detail": "This time slot is already booked for the selected doctor."}
+                )
 
         return attrs
 

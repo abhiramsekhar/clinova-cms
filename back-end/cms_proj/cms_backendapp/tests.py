@@ -324,3 +324,33 @@ class AdminDomainTests(APITestCase):
         res_anon = self.client.get("/api/users/")
         self.assertEqual(res_anon.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_id_sequence_generation(self):
+        from cms_backendapp.models import generate_prefixed_id, IdSequence
+        from django.db import transaction
+
+        with transaction.atomic():
+            id1 = generate_prefixed_id("CUSTOM_TEST", "CUST", width=4)
+            id2 = generate_prefixed_id("CUSTOM_TEST", "CUST", width=4)
+
+        self.assertEqual(id1, "CUST-0001")
+        self.assertEqual(id2, "CUST-0002")
+        seq = IdSequence.objects.get(entity_type="CUSTOM_TEST")
+        self.assertEqual(seq.last_value, 2)
+
+    def test_audit_log_sensitive_action(self):
+        headers = self.auth_headers(self.user_admin)
+        from cms_backendapp.models import AuditLog
+
+        # Reset password triggers AuditLog
+        res = self.client.post(
+            f"/api/users/{self.user_doc.user_id}/reset-password/",
+            {"password": "ChangedPass@123"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        log = AuditLog.objects.filter(action="RESET_PASSWORD", entity_id=self.user_doc.user_id).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.entity_type, "USER")
+

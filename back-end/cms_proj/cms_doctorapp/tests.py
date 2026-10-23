@@ -242,6 +242,29 @@ class DoctorDomainTests(APITestCase):
         self.assertIsNotNone(ledger)
         self.assertEqual(ledger.quantity, -10)
 
+    def test_prescription_partial_dispense(self):
+        headers_doc = self.auth_headers(self.user_doc)
+        headers_pharm = self.auth_headers(self.user_pharm)
+
+        # Med Paracetamol has stock_quantity=50. Prescribe 75 units.
+        payload = {
+            "patientId": "pat-01",
+            "doctorId": "staff-doc-01",
+            "items": [{"medicineId": "med-02", "quantity": 75}],
+        }
+        res_rx = self.client.post("/api/prescriptions/", payload, format="json", **headers_doc)
+        self.assertEqual(res_rx.status_code, status.HTTP_201_CREATED)
+        rx_id = res_rx.data["id"]
+
+        # Pharmacist dispenses
+        res_disp = self.client.post(f"/api/prescriptions/{rx_id}/dispense/", {"payment": {"status": "PAID"}}, format="json", **headers_pharm)
+        self.assertEqual(res_disp.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_disp.data["status"], "PARTIALLY_DISPENSED")
+
+        # Verify stock decremented to 0
+        self.med_para.refresh_from_db()
+        self.assertEqual(self.med_para.stock_quantity, 0)
+
     def test_lab_order_and_critical_result(self):
         headers_doc = self.auth_headers(self.user_doc)
         headers_lab = self.auth_headers(self.user_lab)

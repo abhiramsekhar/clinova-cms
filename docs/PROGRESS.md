@@ -1,8 +1,8 @@
 # Project Progress & Implementation Status
 
 ## Current Phase: Phase 1 (Backend API)
-**Last Completed Step**: Step 2 (seed_demo [--reset] verification & loading)  
-**Next Step**: Step 3 (Business rules with tests)
+**Last Completed Step**: Step 3 (Business rules with tests - 48 tests passing)  
+**Next Step**: Step 4 (docs/smoke_test.md & validation)
 
 ---
 
@@ -78,6 +78,34 @@
 - **Entity Coverage**: Complete set of entities from `seed.js` loaded with exact frontend ID schemes and Django-hashed passwords.
 - **Credential Summary**: Correctly outputs demo logins table for all 5 roles.
 
+### Step 3 (Completed): Business rules with tests
+- **Appointment Double-Booking Check**:
+  - Implemented in `AppointmentSerializer.validate` and `AppointmentViewSet.book_and_pay` using `Appointment.objects.select_for_update()` inside `transaction.atomic()`, checking `status__in=["SCHEDULED", "CHECKED_IN", "IN_PROGRESS", "COMPLETED"]`.
+  - Excluded `CANCELLED` and `NO_SHOW` appointments from blocking slots.
+- **Book-and-Pay & Patient Register-and-Pay**:
+  - Atomic transaction handling appointment creation, PAID consultation bill, payment record, and bill items.
+- **Consultation Complete & Lock + Addendum**:
+  - `complete` action sets `is_completed=True`, timestamps completion, transitions `Appointment.status` to `COMPLETED`.
+  - `addendum` enforces that notes can only be appended after consultation lock.
+- **Prescription Dispensing**:
+  - FEFO batch deduction logic in `PrescriptionViewSet.dispense`.
+  - Creates negative `StockLedgerEntry` for tracking.
+  - Distinguishes between full dispense (`DISPENSED`) and partial dispense (`PARTIALLY_DISPENSED`) when stock is insufficient.
+  - Automatically creates paid/unpaid pharmacy bills and payments.
+- **Lab Order Lifecycle**:
+  - Transitions through `ORDERED` -> `SAMPLE_COLLECTED` -> `PROCESSING` -> `COMPLETED`.
+  - `enter-result` automatically evaluates critical ranges on parameters and generates high-priority notifications for the attending doctor.
+- **Bill Totals, Payments, and Cancellation**:
+  - Added `@action cancel` on `BillViewSet` with automatic refund payment creation for previously collected sums.
+  - `receive-payment` validates against remaining balance due in paise.
+- **Sequential IdSequence Minting**:
+  - Verified `generate_prefixed_id` increments `IdSequence` atomically under database lock.
+- **Centralized Audit Logging**:
+  - Created `cms_backendapp/audit.py` with `log_audit()`.
+  - Instrumenting sensitive actions: appointment cancellation/no-show, bill cancellation, payment receipt, prescription cancellation/dispensation, consultation completion, user password reset, account unlocking, and staff deactivation.
+- **Test Suite Verification**:
+  - Ran full test suite across all apps: 48 tests executed and passed (0 errors, 0 failures).
+
 ---
 
 ## Architectural Decisions & Invariants
@@ -97,6 +125,5 @@
 ---
 
 ## Next Steps
-- **Step 3**: Business rules with tests: appointment double-booking check with `select_for_update`, book-and-pay, consultation complete & lock + addendum, prescription FEFO dispense & stock ledger, lab order critical alert, IdSequence, AuditLog.
-- **Step 4**: `docs/smoke_test.md`: curl/PowerShell commands and live validation.
+- **Step 4**: `docs/smoke_test.md`: curl/PowerShell commands and live validation against runserver.
 

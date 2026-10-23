@@ -13,7 +13,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from cms_backendapp.models import Role, Staff, User, Department, Setting
+from cms_backendapp.models import Role, Staff, User, Department, Setting, AuditLog
 from cms_doctorapp.models import Doctor
 from cms_recepapp.models import Patient, Appointment, Bill, BillItem, Payment
 
@@ -393,6 +393,64 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(res_pay.data["paidAmount"], 85000)
         self.assertEqual(res_pay.data["balanceDue"], 0)
         self.assertEqual(res_pay.data["status"], "PAID")
+
+    def test_appointment_double_booking_prevention(self):
+        headers = self.auth_headers(self.user_rec)
+        future_date = (datetime.date.today() + datetime.timedelta(days=3)).strftime("%Y-%m-%d")
+
+        # 1. First booking succeeds
+        payload1 = {
+            "patientId": "pat-01",
+            "doctorId": "staff-doc-01",
+            "mode": "PRIOR",
+            "date": future_date,
+            "time": "14:00",
+            "type": "Follow-up",
+            "payment": {"method": "CASH"},
+        }
+        res1 = self.client.post("/api/appointments/book-and-pay/", payload1, format="json", **headers)
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+        appt_id = res1.data["appointment"]["id"]
+
+        # 2. Second booking with exact same doctor, date, and time slot -> blocked by double-booking check
+        payload2 = {
+            "patientId": "pat-01",
+            "doctorId": "staff-doc-01",
+            "mode": "PRIOR",
+            "date": future_date,
+            "time": "14:00",
+            "type": "New Visit",
+            "payment": {"method": "CARD"},
+        }
+        res2 = self.client.post("/api/appointments/book-and-pay/", payload2, format="json", **headers)
+        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res2.data.get("code"), "SLOT_UNAVAILABLE")
+
+        # 3. Cancel the first appointment
+        res_cancel = self.client.post(f"/api/appointments/{appt_id}/cancel/", {"reason": "Change of plans"}, format="json", **headers)
+        self.assertEqual(res_cancel.status_code, status.HTTP_200_OK)
+
+        # 4. Now booking the freed slot succeeds
+        res3 = self.client.post("/api/appointments/book-and-pay/", payload2, format="json", **headers)
+        self.assertEqual(res3.status_code, status.HTTP_201_CREATED)
+
+    def test_bill_cancel_with_refund_and_audit(self):
+        headers = self.auth_headers(self.user_rec)
+        url_cancel = f"/api/bills/{self.bill.bill_id}/cancel/"
+
+        res = self.client.post(url_cancel, {"reason": "Patient discharged without service"}, format="json", **headers)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["status"], "CANCELLED")
+        self.assertEqual(res.data["paidAmount"], 0)
+
+        # Verify negative refund payment was recorded
+        refund_pay = Payment.objects.filter(bill=self.bill, amount_paid=-Decimal("500.00")).first()
+        self.assertIsNotNone(refund_pay)
+
+        # Verify AuditLog created
+        log = AuditLog.objects.filter(action="CANCEL_BILL", entity_id=self.bill.bill_id).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.entity_type, "BILL")
 
     # --- Role Permission Tests ---
     def test_role_permissions_reception(self):

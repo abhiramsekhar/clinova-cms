@@ -21,6 +21,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 
+from .audit import log_audit
 from .permissions import IsRole, IsAdmin
 from .models import User, Staff, Department, Setting, AuditLog, Notification, Role
 from .serializers_admin import (
@@ -59,6 +60,14 @@ class UserViewSet(viewsets.ModelViewSet):
         user.failed_attempts = 0
         user.locked_until = None
         user.save(update_fields=["password_hash", "failed_attempts", "locked_until"])
+
+        log_audit(
+            action="RESET_PASSWORD",
+            entity_type="USER",
+            entity_id=user.user_id,
+            details={"username": user.username},
+            request=request,
+        )
         return Response({"message": f"Password reset successfully for {user.username}."}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="unlock")
@@ -67,6 +76,14 @@ class UserViewSet(viewsets.ModelViewSet):
         user.failed_attempts = 0
         user.locked_until = None
         user.save(update_fields=["failed_attempts", "locked_until"])
+
+        log_audit(
+            action="UNLOCK",
+            entity_type="USER",
+            entity_id=user.user_id,
+            details={"username": user.username},
+            request=request,
+        )
         return Response({"message": f"User {user.username} unlocked."}, status=status.HTTP_200_OK)
 
 
@@ -137,6 +154,14 @@ class StaffViewSet(viewsets.ModelViewSet):
         if user:
             user.is_active = False
             user.save(update_fields=["is_active"])
+
+        log_audit(
+            action="DEACTIVATE_STAFF",
+            entity_type="STAFF",
+            entity_id=staff.staff_id,
+            details={"staffName": staff.name, "role": staff.role.role_id if staff.role else None},
+            request=request,
+        )
 
         return Response(StaffSerializer(staff).data, status=status.HTTP_200_OK)
 

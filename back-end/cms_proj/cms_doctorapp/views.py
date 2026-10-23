@@ -19,6 +19,7 @@ from rest_framework.pagination import PageNumberPagination
 
 from cms_backendapp.permissions import IsRole
 from cms_backendapp.models import Staff, Department, LabTestCatalog, Notification, AuditLog
+from cms_backendapp.audit import log_audit
 from cms_recepapp.models import Patient, Appointment, Bill, BillItem
 from cms_pharmapp.models import Medicine
 from .models import Doctor, ConsultationRecord, Prescription, PrescriptionItem, LabTest
@@ -177,6 +178,14 @@ class ConsultationViewSet(viewsets.ModelViewSet):
         if consultation.appointment:
             consultation.appointment.status = Appointment.Status.COMPLETED
             consultation.appointment.save(update_fields=["status", "updated_at"])
+
+        log_audit(
+            action="COMPLETE_CONSULTATION",
+            entity_type="CONSULTATION",
+            entity_id=consultation.record_id,
+            details={"patientId": consultation.patient_id, "appointmentId": consultation.appointment_id},
+            request=request,
+        )
 
         return Response(self.get_serializer(consultation).data, status=status.HTTP_200_OK)
 
@@ -362,6 +371,15 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
 
         prescription.status = Prescription.Status.CANCELLED
         prescription.save(update_fields=["status", "updated_at"])
+
+        log_audit(
+            action="CANCEL_PRESCRIPTION",
+            entity_type="PRESCRIPTION",
+            entity_id=prescription.prescription_id,
+            details={"patientId": prescription.patient_id},
+            request=request,
+        )
+
         return Response(self.get_serializer(prescription).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="dispense")
@@ -473,6 +491,17 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
                     transaction_ref=payment_info.get("transactionRef"),
                     received_by=staff,
                 )
+
+        log_audit(
+            action="DISPENSE_PRESCRIPTION",
+            entity_type="PRESCRIPTION",
+            entity_id=prescription.prescription_id,
+            details={
+                "status": prescription.status,
+                "totalCost": int(round(float(total_cost) * 100)),
+            },
+            request=request,
+        )
 
         return Response(self.get_serializer(prescription).data, status=status.HTTP_200_OK)
 

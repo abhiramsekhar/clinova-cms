@@ -19,6 +19,7 @@ from rest_framework.pagination import PageNumberPagination
 
 from cms_backendapp.permissions import IsRole
 from cms_backendapp.models import Staff, Department, Notification
+from cms_backendapp.audit import log_audit
 from cms_doctorapp.models import Doctor, ConsultationRecord, Prescription, LabTest
 from .models import Patient, Appointment, Bill, BillItem, Payment
 from .serializers import (
@@ -214,6 +215,10 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         return [IsRole("ADMIN", "DOCTOR", "RECEPTIONIST")()]
 
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = Appointment.objects.select_related(
             "patient", "doctor__staff", "doctor__department", "department", "created_by"
@@ -334,11 +339,17 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "Cannot book a date in the past.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
             # Check if already booked
-            is_booked = Appointment.objects.filter(
+            is_booked = Appointment.objects.select_for_update().filter(
                 doctor=doctor,
                 appointment_date=date_val,
                 time_slot=time_val,
-            ).exclude(status__in=["CANCELLED", "NO_SHOW"]).exists()
+                status__in=[
+                    Appointment.Status.SCHEDULED,
+                    Appointment.Status.CHECKED_IN,
+                    Appointment.Status.IN_PROGRESS,
+                    Appointment.Status.COMPLETED,
+                ],
+            ).exists()
             if is_booked:
                 return Response({"detail": "This time slot is already booked for the selected doctor.", "code": "SLOT_UNAVAILABLE"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -493,6 +504,14 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             bill.payment_status = Bill.PaymentStatus.CANCELLED
             bill.save(update_fields=["payment_status", "updated_at"])
 
+        log_audit(
+            action="CANCEL_APPOINTMENT",
+            entity_type="APPOINTMENT",
+            entity_id=appt.appointment_id,
+            details={"reason": reason, "refund": refund},
+            request=request,
+        )
+
         return Response(self.get_serializer(appt).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="no-show")
@@ -512,6 +531,15 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         notes_prefix = f"{appt.notes}\n" if appt.notes else ""
         appt.notes = f"{notes_prefix}Marked no-show by {marked_by_name}"
         appt.save(update_fields=["status", "notes", "updated_at"])
+
+        log_audit(
+            action="NO_SHOW_APPOINTMENT",
+            entity_type="APPOINTMENT",
+            entity_id=appt.appointment_id,
+            details={"markedBy": marked_by_name},
+            request=request,
+        )
+
         return Response(self.get_serializer(appt).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="update-status")
@@ -612,6 +640,53 @@ class BillViewSet(viewsets.ModelViewSet):
         )
 
         bill.refresh_from_db()
+
+        log_audit(
+            action="RECEIVE_PAYMENT",
+            entity_type="BILL",
+            entity_id=bill.bill_id,
+            details={"amountPaise": amount_paise, "method": method},
+            request=request,
+        )
+
+        return Response(BillSerializer(bill).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    @transaction.atomic
+    def cancel(self, request, pk=None):
+        """Cancels a bill. If payments were recorded, creates refund payment."""
+        bill = self.get_object()
+        if bill.payment_status == Bill.PaymentStatus.CANCELLED:
+            return Response(
+                {"detail": "Bill is already cancelled.", "code": "INVALID_STATE"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = request.data.get("reason", "Cancelled by user")
+        staff = getattr(request.user, "staff", None)
+
+        if bill.amount_paid > 0:
+            Payment.objects.create(
+                bill=bill,
+                amount_paid=-bill.amount_paid,
+                payment_date=datetime.date.today(),
+                payment_method=Payment.Method.OTHER,
+                transaction_ref=f"REFUND: {reason}",
+                received_by=staff,
+            )
+            bill.amount_paid = Decimal("0.00")
+
+        bill.payment_status = Bill.PaymentStatus.CANCELLED
+        bill.save(update_fields=["payment_status", "amount_paid", "updated_at"])
+
+        log_audit(
+            action="CANCEL_BILL",
+            entity_type="BILL",
+            entity_id=bill.bill_id,
+            details={"reason": reason},
+            request=request,
+        )
+
         return Response(BillSerializer(bill).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["get"], url_path="payments")
