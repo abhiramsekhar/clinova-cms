@@ -13,11 +13,14 @@ ViewSets for Admin & System Domain:
 
 import datetime
 from decimal import Decimal
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q, Sum, Count
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 
@@ -56,6 +59,12 @@ class UserViewSet(viewsets.ModelViewSet):
         if not new_pw:
             return Response({"detail": "Password is required.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            from django.contrib.auth.password_validation import validate_password
+            validate_password(new_pw, user=user)
+        except DjangoValidationError as error:
+            return Response({"password": error.messages}, status=status.HTTP_400_BAD_REQUEST)
+
         user.set_password(new_pw)
         user.failed_attempts = 0
         user.locked_until = None
@@ -91,9 +100,12 @@ class StaffViewSet(viewsets.ModelViewSet):
     """Staff directory and management."""
     serializer_class = StaffSerializer
     pagination_class = StandardPagination
+    http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_permissions(self):
-        if self.action in ["list", "retrieve", "doctors"]:
+        if self.action == "list":
+            return [IsRole("ADMIN", "RECEPTIONIST")()]
+        if self.action in ["retrieve", "doctors"]:
             return [IsRole("ADMIN", "RECEPTIONIST", "DOCTOR", "PHARMACIST", "LAB_TECH")()]
         return [IsAdmin()]
 
@@ -128,6 +140,7 @@ class StaffViewSet(viewsets.ModelViewSet):
         return Response(StaffSerializer(docs, many=True).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="deactivate")
+    @transaction.atomic
     def deactivate(self, request, pk=None):
         """Deactivates staff and corresponding user account."""
         staff = self.get_object()
@@ -203,7 +216,9 @@ class SettingViewSet(viewsets.ModelViewSet):
         updated = {}
         for k, v in data.items():
             import json
-            val_str = json.dumps(v) if not isinstance(v, str) else v
+            # Setting consumers parse these values with json.loads(); keep
+            # strings encoded just like numeric and structured values.
+            val_str = json.dumps(v)
             s, _ = Setting.objects.update_or_create(key=k, defaults={"value": val_str})
             updated[k] = v
         return Response(updated, status=status.HTTP_200_OK)
@@ -216,7 +231,29 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAdmin]
 
     def get_queryset(self):
-        return AuditLog.objects.select_related("user").all().order_by("-created_at")
+        qs = AuditLog.objects.select_related("user").all().order_by("-created_at")
+        search = self.request.query_params.get("search", "").strip()
+        action = self.request.query_params.get("action", "").strip()
+        resource_type = self.request.query_params.get("resource_type", "").strip()
+
+        if len(search) > 100:
+            raise ValidationError({"search": "Search must be 100 characters or fewer."})
+        if len(action) > 50:
+            raise ValidationError({"action": "Action must be 50 characters or fewer."})
+        if len(resource_type) > 50:
+            raise ValidationError({"resource_type": "Resource type must be 50 characters or fewer."})
+        if action:
+            qs = qs.filter(action__iexact=action)
+        if resource_type:
+            qs = qs.filter(entity_type__iexact=resource_type)
+        if search:
+            qs = qs.filter(
+                Q(action__icontains=search)
+                | Q(entity_type__icontains=search)
+                | Q(entity_id__icontains=search)
+                | Q(user__username__icontains=search)
+            )
+        return qs
 
 
 class NotificationViewSet(viewsets.ModelViewSet):
@@ -252,7 +289,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
 class DashboardViewSet(viewsets.ViewSet):
     """Role-specific KPI dashboards."""
 
-    @action(detail=False, methods=["get"], url_path="admin")
+    @action(detail=False, methods=["get"], url_path="admin", permission_classes=[IsAdmin()])
     def admin_dashboard(self, request):
         from cms_recepapp.models import Appointment, Bill
         from cms_doctorapp.models import LabTest
@@ -373,6 +410,21 @@ class ReportViewSet(viewsets.ViewSet):
         report_type = request.query_params.get("type", "appointments")
         start = request.query_params.get("start")
         end = request.query_params.get("end")
+
+        if report_type not in {"appointments", "revenue", "medicines"}:
+            return Response(
+                {"detail": "Unsupported report type. Choose appointments, revenue, or medicines."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            start_date = parse_date(start) if start else None
+            end_date = parse_date(end) if end else None
+        except ValueError:
+            start_date = end_date = None
+        if (start and start_date is None) or (end and end_date is None):
+            return Response({"detail": "Dates must use YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
+        if start_date and end_date and start_date > end_date:
+            return Response({"detail": "Start date must be on or before end date."}, status=status.HTTP_400_BAD_REQUEST)
 
         from cms_recepapp.models import Appointment, Bill
         from cms_pharmapp.models import Medicine

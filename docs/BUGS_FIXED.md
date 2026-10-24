@@ -19,3 +19,13 @@
 - Doctor Patients, Appointments, Consultation Records, Prescriptions, Lab Orders, and Clinical History routes no longer render placeholder-only pages; they call the existing APIs, handle paginated results and expose retryable loading/error/empty states.
 - Doctor read endpoints now enforce authenticated-doctor scope even when doctor filters are missing or altered; patient details/history and prescription/lab creation no longer allow cross-doctor access.
 - Doctor lab and clinical-history views now use the serializers' actual camelCase and snake_case response fields; Doctor query cache keys include the authenticated staff identity to avoid cross-account cached data.
+- Doctor dashboard tables now use the shared table styles and explicit columns, preventing appointment and lab columns from drifting; Doctor pages share scoped responsive styling.
+- Admin dashboard now maps the actual backend KPI fields and its API endpoint explicitly rejects non-Admin roles; verified by the passing AdminDomainTests suite.
+- Admin Staff placeholder is now backed by the paginated staff API, with validated account creation in one transaction, linked Doctor profiles, edit/deactivate actions and future-appointment protection; verified by AdminDomainTests and the React production build.
+- Admin Users now reads all paginated accounts and wires the supported reset/unlock actions; password reset validates against Django's configured validators and is covered by AdminDomainTests.
+- Admin Departments now uses paginated department data and supported create/edit fields; fee values convert between rupees and paise once, and the unsupported head-doctor write is not exposed.
+- Admin Lab Catalog now reads actual catalog fields and supports legacy price-only edits with paise conversion; catalog add/deactivation controls are not exposed.
+- Admin Suppliers now shows read-only supplier and purchase-order data with real filters and a detail view; supplier rate metadata is labeled accurately because the endpoint returns references, not unit prices.
+- Admin Reports now offers only implemented report types, uses the actual response shape, validates date ranges, and exports safely escaped CSV; unsupported report types no longer fall through to appointment rows.
+- Admin Settings now edits only known stored keys, parses mixed raw/JSON-encoded values, and sends only changed non-empty settings; the backend JSON-encodes string updates so existing settings consumers can read them.
+- Admin Audit Log now serializes actual entity fields and supports validated server-side filters while keeping audit records read-only.

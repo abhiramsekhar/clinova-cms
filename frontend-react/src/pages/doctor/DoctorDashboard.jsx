@@ -7,6 +7,7 @@ import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
 import { LoadingState, ErrorState, EmptyState } from '../../components/States';
 import { formatTime } from '../../utils/format';
+import './doctor-pages.css';
 
 const today = new Date().toISOString().slice(0, 10);
 
@@ -58,11 +59,14 @@ export function DoctorDashboard() {
   const pendingLabs = Array.isArray(stats?.pendingLabsList) ? stats.pendingLabsList : [];
 
   return (
-    <div>
-      <div className="page-header">
+    <div className="doctor-workspace doctor-dashboard">
+      <div className="page-header doctor-page-header">
         <div className="page-header__info">
-          <h1 className="text-page-title">Doctor Consultation Dashboard</h1>
-          <p className="text-caption">Today's clinical schedule and pending diagnostic tasks</p>
+          <div className="doctor-page-heading">
+            <h1 className="text-page-title">Doctor Dashboard</h1>
+            <span className="doctor-current-date">{new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}</span>
+          </div>
+          <p className="text-caption">Your clinical schedule and pending diagnostic tasks</p>
         </div>
         <div className="page-header__actions">
           <Link to="/doctor/appointments" className="btn btn--primary">
@@ -72,22 +76,22 @@ export function DoctorDashboard() {
         </div>
       </div>
 
-      <div className="stat-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+      <div className="stat-row doctor-kpi-grid">
         {kpis.map((kpi) => (
-          <div key={kpi.label} className="glass card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-              <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--muted)' }}>{kpi.label}</span>
-              <div style={{ color: kpi.color }}><Icon name={kpi.icon} size={20} /></div>
+          <div key={kpi.label} className="glass card doctor-kpi-card">
+            <div className="doctor-kpi-card__top">
+              <span>{kpi.label}</span>
+              <div className="doctor-kpi-card__icon" style={{ color: kpi.color }}><Icon name={kpi.icon} size={19} /></div>
             </div>
-            <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text)' }}>{kpi.value ?? 0}</div>
+            <div className="doctor-kpi-card__value">{kpi.value ?? 0}</div>
           </div>
         ))}
       </div>
 
-      <div className="glass card" style={{ padding: '1.5rem', borderRadius: '12px', marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text)', margin: 0 }}>Today's Appointments</h3>
-          <span style={{ fontSize: '0.8125rem', color: 'var(--muted)' }}>
+      <div className="glass card doctor-panel">
+        <div className="doctor-panel__heading">
+          <h2 className="text-card-title">Today's Appointments</h2>
+          <span className="doctor-panel__count">
             {appointments.length} appointment{appointments.length !== 1 ? 's' : ''}
           </span>
         </div>
@@ -96,10 +100,11 @@ export function DoctorDashboard() {
         ) : appointments.length === 0 ? (
           <EmptyState title="No appointments today" description="Your schedule has no appointments for today." icon="icon-calendar" />
         ) : (
-          <div className="table-wrapper">
-            <table className="table">
+          <div className="table-container doctor-dashboard-table-container">
+            <table className="data-table doctor-appointments-table">
+              <colgroup><col /><col /><col /><col /><col /><col /></colgroup>
               <thead>
-                <tr><th>Time / Token</th><th>Patient Name</th><th>MRN</th><th>Status</th><th>Action</th></tr>
+                <tr><th scope="col">Time</th><th scope="col">Token</th><th scope="col">Patient Name</th><th scope="col">MRN</th><th scope="col">Status</th><th scope="col">Action</th></tr>
               </thead>
               <tbody>
                 {appointments.slice(0, 10).map((appt) => {
@@ -108,19 +113,17 @@ export function DoctorDashboard() {
                   const canConsult = ['CHECKED_IN', 'IN_PROGRESS'].includes(appt.status);
                   return (
                     <tr key={appt.id}>
-                      <td>
-                        <strong>{formatTime(appt.time)}</strong>
-                        {appt.tokenNumber != null && <span style={{ marginLeft: '0.5rem', color: 'var(--muted)', fontSize: '0.8rem' }}>(#{appt.tokenNumber})</span>}
-                      </td>
-                      <td style={{ fontWeight: 600 }}>{patientName}</td>
-                      <td><code>{patientMrn}</code></td>
+                      <td className="doctor-table-time">{formatTime(appt.time)}</td>
+                      <td className="doctor-table-token">{appt.tokenNumber ?? '—'}</td>
+                      <td className="doctor-table-patient">{patientName}</td>
+                      <td className="doctor-table-mrn"><code>{patientMrn}</code></td>
                       <td><Badge status={appt.status} /></td>
                       <td>
                         {canConsult ? (
                           <Link to={`/doctor/consultation?appointmentId=${encodeURIComponent(appt.id)}`} className="btn btn--secondary btn--sm">Consult</Link>
                         ) : appt.status === 'SCHEDULED' ? (
-                          <span style={{ color: 'var(--muted)', fontSize: '0.8125rem' }}>Awaiting check-in</span>
-                        ) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                          <span className="doctor-muted">Awaiting check-in</span>
+                        ) : <span className="doctor-muted">—</span>}
                       </td>
                     </tr>
                   );
@@ -131,23 +134,24 @@ export function DoctorDashboard() {
         )}
       </div>
 
-      <div className="glass card" style={{ padding: '1.5rem', borderRadius: '12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text)', margin: 0 }}>Pending Lab Results</h3>
+      <div className="glass card doctor-panel">
+        <div className="doctor-panel__heading">
+          <h2 className="text-card-title">Pending Lab Results</h2>
           <Link to="/doctor/lab-orders" className="btn btn--secondary btn--sm">View Lab Orders</Link>
         </div>
         {pendingLabs.length === 0 ? (
           <EmptyState title="No pending lab results" description="There are no outstanding lab orders for your patients." icon="icon-flask" />
         ) : (
-          <div className="table-wrapper">
-            <table className="table">
-              <thead><tr><th>Patient</th><th>Test</th><th>Ordered</th><th>Status</th></tr></thead>
+          <div className="table-container doctor-dashboard-table-container">
+            <table className="data-table doctor-labs-table">
+              <colgroup><col /><col /><col /><col /></colgroup>
+              <thead><tr><th scope="col">Patient</th><th scope="col">Test</th><th scope="col">Ordered</th><th scope="col">Status</th></tr></thead>
               <tbody>
                 {pendingLabs.map((lab) => (
                   <tr key={lab.id}>
-                    <td style={{ fontWeight: 600 }}>{lab.patientName}</td>
+                    <td className="doctor-table-patient">{lab.patientName}</td>
                     <td>{lab.testName}</td>
-                    <td>{lab.orderedDate || '—'}</td>
+                    <td className="doctor-table-date">{lab.orderedDate || '—'}</td>
                     <td><Badge status={lab.status} /></td>
                   </tr>
                 ))}

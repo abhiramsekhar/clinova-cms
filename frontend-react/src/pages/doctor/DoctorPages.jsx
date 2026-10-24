@@ -8,6 +8,7 @@ import Icon from '../../components/Icon';
 import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { DataTable } from '../../components/ui';
 import { Format, formatDate, formatDateTime, formatTime } from '../../utils/format';
+import './doctor-pages.css';
 
 const PAGE_SIZE = 200;
 const today = new Date().toISOString().slice(0, 10);
@@ -19,13 +20,15 @@ function rowsFrom(data) {
 
 function PageHeader({ title, subtitle, icon, children }) {
   return (
-    <div className="page-header">
+    <div className="page-header doctor-page-header">
       <div className="page-header__info">
-        <h1 className="text-page-title">{title}</h1>
+        <div className="doctor-page-heading">
+          {icon && <Icon name={icon} size={20} />}
+          <h1 className="text-page-title">{title}</h1>
+        </div>
         {subtitle && <p className="text-caption">{subtitle}</p>}
       </div>
       <div className="page-header__actions">
-        {icon && <Icon name={icon} size={18} />}
         {children}
       </div>
     </div>
@@ -64,14 +67,16 @@ export function DoctorAppointmentsPage() {
   ];
 
   return (
-    <div>
+    <div className="doctor-workspace">
       <PageHeader title="My Appointments" subtitle="Appointments for the selected day" icon="icon-calendar">
-        <label className="form-group__label" htmlFor="doctor-appointment-date">Date</label>
-        <input id="doctor-appointment-date" className="form-control" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        <div className="doctor-header-filter">
+          <label className="form-group__label" htmlFor="doctor-appointment-date">Date</label>
+          <input id="doctor-appointment-date" className="form-control" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        </div>
       </PageHeader>
       {query.isLoading ? <LoadingState message="Loading appointments..." /> : query.error
         ? <ErrorState title="Unable to load appointments" error={query.error} onRetry={query.refetch} />
-        : <section className="glass card" style={{ padding: '1rem' }}>
+        : <section className="glass card doctor-panel" style={{ padding: '1rem' }}>
           <DataTable columns={columns} data={rows} showSearch searchPlaceholder="Search today's appointments..." emptyTitle="No appointments for this date" />
         </section>}
     </div>
@@ -95,9 +100,9 @@ export function DoctorPatientsPage() {
   ];
 
   return (
-    <div>
+    <div className="doctor-workspace">
       <PageHeader title="Patient Records" subtitle="Patients assigned to or seen by you" icon="icon-users" />
-      <section className="glass card" style={{ padding: '1rem' }}>
+      <section className="glass card doctor-panel" style={{ padding: '1rem' }}>
         <label htmlFor="doctor-patient-search" className="form-group__label">Search patients</label>
         <input id="doctor-patient-search" className="form-control" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, MRN or phone" />
         {query.isLoading ? <LoadingState message="Loading patient records..." /> : query.error
@@ -149,13 +154,13 @@ export function DoctorConsultationPage() {
   const patient = patientQuery.data || record?.patient || null;
 
   return (
-    <div>
+    <div className="doctor-workspace">
       <PageHeader title="Consultation Record" subtitle="Authorized clinical record details" icon="icon-clipboard-list">
         {patientId && <Link className="btn btn--secondary btn--sm" to={`/shared/patient-profile?id=${encodeURIComponent(patientId)}`}>Patient Profile</Link>}
       </PageHeader>
       {patient?.allergies?.length > 0 && <div className="glass card" role="alert" style={{ padding: '1rem', marginBottom: '1rem', borderColor: 'var(--danger)' }}><strong>Allergies:</strong> {patient.allergies.join(', ')}</div>}
       {record ? (
-        <section className="glass card" style={{ padding: '1.5rem' }}>
+        <section className="glass card doctor-panel" style={{ padding: '1.5rem' }}>
           <h2 className="text-card-title">{record.patientName || patient?.name || 'Patient'} · {formatDate(record.visitDate)}</h2>
           <p><strong>Diagnosis:</strong> {record.diagnosis || 'Not recorded'}</p>
           <p><strong>Symptoms:</strong> {record.symptoms || 'Not recorded'}</p>
@@ -187,9 +192,9 @@ export function DoctorPrescriptionsPage() {
   ];
 
   return (
-    <div>
+    <div className="doctor-workspace">
       <PageHeader title="Prescription Management" subtitle="Prescriptions issued by you" icon="icon-clipboard-list" />
-      <section className="glass card" style={{ padding: '1rem' }}>
+      <section className="glass card doctor-panel" style={{ padding: '1rem' }}>
         <label htmlFor="doctor-prescription-status" className="form-group__label">Filter by status</label>
         <select id="doctor-prescription-status" className="form-control" value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="">All statuses</option><option value="PENDING">Pending</option><option value="PARTIALLY_DISPENSED">Partially dispensed</option><option value="DISPENSED">Dispensed</option><option value="CANCELLED">Cancelled</option>
@@ -219,9 +224,9 @@ export function DoctorLabOrdersPage() {
   ];
 
   return (
-    <div>
+    <div className="doctor-workspace">
       <PageHeader title="Diagnostic Lab Orders" subtitle="Your orders, processing state and reported results" icon="icon-flask" />
-      <section className="glass card" style={{ padding: '1rem' }}>
+      <section className="glass card doctor-panel" style={{ padding: '1rem' }}>
         <label htmlFor="doctor-lab-status" className="form-group__label">Filter by status</label>
         <select id="doctor-lab-status" className="form-control" value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="">All statuses</option><option value="ORDERED">Ordered</option><option value="SAMPLE_COLLECTED">Sample collected</option><option value="PROCESSING">Processing</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option>
@@ -261,11 +266,11 @@ export function DoctorClinicalHistoryPage() {
   ];
 
   return (
-    <div>
+    <div className="doctor-workspace">
       <PageHeader title="Clinical History & Timeline" subtitle="Authorized longitudinal records for your patients" icon="icon-history" />
       {patientsQuery.error ? <ErrorState title="Unable to load your patients" error={patientsQuery.error} onRetry={patientsQuery.refetch} /> : patientsQuery.isLoading
         ? <LoadingState message="Loading your patients..." />
-        : <section className="glass card" style={{ padding: '1rem', marginBottom: '1rem' }}>
+        : <section className="glass card doctor-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>
           <label htmlFor="history-patient" className="form-group__label">Patient</label>
           <select id="history-patient" className="form-control" value={patientId} onChange={(event) => setPatientId(event.target.value)}>
             <option value="">Choose a patient</option>{patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.name} {patient.mrn ? `(${patient.mrn})` : ''}</option>)}
@@ -273,7 +278,7 @@ export function DoctorClinicalHistoryPage() {
         </section>}
       {patientId && (historyQuery.isLoading ? <LoadingState message="Loading clinical history..." /> : historyQuery.error
         ? <ErrorState title="Unable to load clinical history" error={historyQuery.error} onRetry={historyQuery.refetch} />
-        : <section className="glass card" style={{ padding: '1rem' }}>
+        : <section className="glass card doctor-panel" style={{ padding: '1rem' }}>
           <h2 className="text-card-title">{history.patientName || 'Clinical Timeline'}</h2>
           <DataTable columns={columns} data={timeline} showSearch searchPlaceholder="Search clinical history..." emptyTitle="No clinical history found" />
         </section>)}

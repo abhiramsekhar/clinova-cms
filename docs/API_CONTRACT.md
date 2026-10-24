@@ -38,10 +38,10 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/departments/` | Any | List all (filter: `?is_active=true`) |
-| GET | `/departments/{id}/` | Any | Detail |
-| POST | `/departments/` | ADMIN | Create |
-| PATCH | `/departments/{id}/` | ADMIN | Update (name, code, headDoctor, defaultFee, isBookable, isActive) |
+| GET | `/departments/` | ADMIN, RECEPTIONIST, DOCTOR, PHARMACIST, LAB_TECH | Paginated list; filter: `?is_active=true|false` |
+| GET | `/departments/{id}/` | ADMIN, RECEPTIONIST, DOCTOR, PHARMACIST, LAB_TECH | Detail |
+| POST | `/departments/` | ADMIN | Create. `defaultFee` is integer paise. |
+| PATCH | `/departments/{id}/` | ADMIN | Update name, code, description, defaultFee (integer paise), isBookable, isActive. `headDoctorId` is read-only. |
 
 ---
 
@@ -51,10 +51,12 @@
 |--------|----------|-------|-------|
 | GET | `/staff/` | ADMIN, RECEPTIONIST | List all staff. Filter: `?role=DOCTOR&is_active=true&department=` |
 | GET | `/staff/{id}/` | Any | Detail (includes consultationFee if DOCTOR role) |
-| POST | `/staff/` | ADMIN | Create staff + auto-create user account |
-| PATCH | `/staff/{id}/` | ADMIN | Update |
+| POST | `/staff/` | ADMIN | Create staff and linked login account atomically. Required: `name`, `email`, `roleId`, `username`, `password`; optional staff fields include `designation`, `phone`, `departmentId`. Password is write-only, validated by Django's configured password validators, hashed by the existing `User.set_password()` flow, and never returned. Doctor role creation also creates the Doctor profile. |
+| PATCH | `/staff/{id}/` | ADMIN | Update staff fields (`name`, `email`, `roleId`, `departmentId`, `designation`, `phone`). Login credentials cannot be changed here; use the existing user-management password reset operation. |
 | POST | `/staff/{id}/deactivate/` | ADMIN | Deactivate staff + user. Checks for future appointments if DOCTOR. |
 | GET | `/staff/doctors/` | RECEPTIONIST, DOCTOR | List active doctors only (for appointment booking dropdown) |
+
+Staff list responses use standard pagination (`count`, `next`, `previous`, `results`); supported query filters are `role`, `is_active`, `department`, and `search` (name, email, or phone). The staff resource does not allow PUT or DELETE. Listing is available to ADMIN and RECEPTIONIST; staff mutations are ADMIN-only.
 
 ---
 
@@ -62,8 +64,8 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/users/` | ADMIN | List all user accounts |
-| POST | `/users/{id}/reset-password/` | ADMIN | Reset password + unlock |
+| GET | `/users/` | ADMIN | Paginated account list: `id`, username, role, staffId, staffName, isActive, failedAttempts, lockedUntil, lastLogin. No password/hash fields; no backend search/filter parameters. |
+| POST | `/users/{id}/reset-password/` | ADMIN | Body `{ password }`; validates with configured Django password validators, updates the hash, and clears failed attempts/lock. Password is never returned. |
 | POST | `/users/{id}/unlock/` | ADMIN | Reset failedAttempts, clear lockedUntil |
 
 ---
@@ -144,11 +146,10 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/suppliers/` | PHARMACIST, ADMIN | List |
-| GET | `/suppliers/{id}/` | PHARMACIST, ADMIN | Detail with rates |
-| POST | `/suppliers/` | PHARMACIST | Create |
-| PATCH | `/suppliers/{id}/` | PHARMACIST | Update (including rates) |
-| GET | `/suppliers/{id}/rates/` | PHARMACIST | Rates with medicine details |
+| GET | `/suppliers/` | ADMIN, PHARMACIST | Paginated list; `?search=` filters supplier name. Fields include contact, address, typicalMedicines and active status. |
+| GET | `/suppliers/{id}/` | ADMIN, PHARMACIST | Detail |
+| GET | `/suppliers/{id}/rates/` | ADMIN, PHARMACIST | Returns supplierId, name and typicalMedicines references; does not return unit prices. |
+| POST/PATCH | `/suppliers/`, `/suppliers/{id}/` | ADMIN, PHARMACIST | API supports management, but the Admin oversight page intentionally remains read-only. |
 
 ---
 
@@ -156,10 +157,10 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/purchase-orders/` | PHARMACIST | List |
-| GET | `/purchase-orders/{id}/` | PHARMACIST | Detail |
-| POST | `/purchase-orders/` | PHARMACIST | Create. Unit costs from supplier rates. |
-| POST | `/purchase-orders/{id}/receive/` | PHARMACIST | Body: `{ items: [{ medicineId, quantity, batchNo, expiryDate }] }`. Updates PO status + medicine stock. |
+| GET | `/purchase-orders/` | ADMIN, PHARMACIST | Paginated list; filters: `?supplier={id}&status={status}`. |
+| GET | `/purchase-orders/{id}/` | ADMIN, PHARMACIST | Detail with serialized items. |
+| POST | `/purchase-orders/` | ADMIN, PHARMACIST | Create. Unit costs from supplier rates. |
+| POST | `/purchase-orders/{id}/receive/` | ADMIN, PHARMACIST | Body: `{ items: [{ medicineId, quantity, batchNo, expiryDate }] }`. Updates PO status + medicine stock. |
 
 ---
 
@@ -167,8 +168,9 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/lab-catalog/` | DOCTOR, LAB_TECH, ADMIN | Active tests |
-| PATCH | `/lab-catalog/{id}/` | ADMIN | Update price |
+| GET | `/lab-catalog/` | ADMIN, DOCTOR, LAB_TECH, RECEPTIONIST | Paginated list; filters: `?is_active=true|false&category=`. Response fields include name, code, category, sampleType, parameters, turnaroundHrs, description, price (integer paise), and isActive. |
+| PATCH | `/lab-catalog/{id}/` | ADMIN | Serializer accepts catalog fields including price (integer paise). The Admin UI follows legacy scope and edits price only. |
+| POST/PUT/DELETE | `/lab-catalog/`, `/lab-catalog/{id}/` | ADMIN | Technically exposed by the generic viewset; not presented in the Admin UI because the legacy Admin workflow is price-only. |
 
 ---
 
@@ -210,12 +212,12 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/dashboard/admin/` | ADMIN | Aggregate stats: staff count, today's appts, pending labs, chart data, dept overview, stock alerts |
+| GET | `/dashboard/admin/` | ADMIN | `{ staffCount, activeDoctors, todayAppointments, pendingLabs, lowStockMedicines, totalRevenuePaise }`. `totalRevenuePaise` is integer paise. Admin-only. |
 | GET | `/dashboard/doctor/` | DOCTOR | Own `todayAppointments`, `patients` (assigned or seen by this doctor), `pendingAppointments` (today's SCHEDULED/CHECKED_IN), `completedConsultations` (today's COMPLETED appointments), `pendingLabs` and newest-first `pendingLabsList` (all statuses except COMPLETED/CANCELLED, capped at 5), and `activePrescriptions` (PENDING). Requires the authenticated account to have a linked Doctor profile. |
 | GET | `/dashboard/reception/` | RECEPTIONIST | Today stats: checked-in, scheduled, completed, unpaid bills |
 | GET | `/dashboard/pharmacy/` | PHARMACIST | Pending Rx count, low stock, expiring, today's dispensed |
 | GET | `/dashboard/lab/` | LAB_TECH | Queue: pending, in-progress, completed today, critical |
-| GET | `/reports/generate/` | ADMIN | Query: `?type=appointments|revenue|outstanding|medicines|lab&start=&end=`. Returns data array. |
+| GET | `/reports/generate/` | ADMIN | `?type=appointments|revenue|medicines&start=YYYY-MM-DD&end=YYYY-MM-DD`; returns `{ type, count, data }`, capped at 100 rows. Dates are validated; start must not follow end. Appointment and revenue data are date-filtered. Medicines is a current stock snapshot and ignores dates. Unsupported types return 400. |
 
 ---
 
@@ -223,8 +225,8 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/settings/` | ADMIN | All settings as key-value |
-| PATCH | `/settings/` | ADMIN | Update settings. Body: `{ hospitalName?, slotDuration?, ... }` |
+| GET | `/settings/` | ADMIN | All stored settings as a key/value object. Seeded keys: `clinic.name`, `clinic.phone`, `clinic.address`, `clinic.email`, `appointment.slotDuration`, `appointment.startTime`, `appointment.endTime`, `billing.registrationFee`. Stored values may be JSON-encoded strings or plain strings. |
+| PATCH | `/settings/` | ADMIN | Partial key/value update. Values are JSON-encoded for settings consumers, including strings; unknown keys not included in the request remain unchanged. `billing.registrationFee` is stored in paise. |
 
 ---
 
@@ -232,7 +234,7 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/audit-log/` | ADMIN | List with pagination, sorted newest first |
+| GET | `/audit-log/` | ADMIN | Read-only paginated records, newest first. Filters: `search` (action, actor username, entity type/id), exact case-insensitive `action`, exact case-insensitive `resource_type`; search max 100 chars, action/resource max 50. Details remain in the API response but the Admin UI does not display values. |
 
 ---
 

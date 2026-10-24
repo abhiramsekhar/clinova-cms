@@ -12,13 +12,13 @@
 | R2 | Reception Patients | IN PROGRESS | Server precheck and validation errors; API-backed patient search; shared registration modal visibility fixed; registration payload matches backend contract but live failure cause remains unverified; browser verification pending |
 | R3 | Reception Appointments | IN PROGRESS | Slot/list errors surfaced; appointment bill status/id now match serializer; bill details fetched for bounded partial fee collection; global search opens server-filtered appointment list; no-show enforces documented 15-minute grace; backend test added; live/browser verification pending |
 | R4 | Reception Billing | IN PROGRESS | Invoice search uses backend filter; payment refreshes billing/dashboard queries; shared payment modal visibility fixed; build and diff check pass; live/browser verification pending |
-| D1 | Doctor Dashboard | IN PROGRESS | Added doctor-scoped patients, today's pending/completed counts, pending lab list, retryable API error states and correct schedule actions; backend regression test added; browser verification pending |
-| D2 | Doctor Appointments | IN PROGRESS | Replaced placeholder with authenticated-doctor, date-filtered API schedule and retryable loading/error/empty states; browser verification pending |
-| D3 | Doctor Patients | IN PROGRESS | Replaced placeholder with doctor-scoped searchable API directory and patient-profile navigation; browser verification pending |
-| D4 | Doctor Consultation | IN PROGRESS | Displays an existing authorized consultation record from its appointment/record route; interactive draft, prescription, lab-order, completion and addendum workflow remains outstanding; browser verification pending |
-| D5 | Doctor Prescriptions | IN PROGRESS | Replaced placeholder with doctor-scoped API results and status filtering; creation, detail/print and cancellation actions remain outstanding; browser verification pending |
-| D6 | Doctor Lab Orders | IN PROGRESS | Replaced placeholder with doctor-scoped API orders, status filtering and returned result/critical data; order/cancel actions remain outstanding; browser verification pending |
-| D7 | Doctor Clinical History | IN PROGRESS | Replaced placeholder with scoped patient selection and API-backed consultation/prescription/lab timeline; browser verification pending |
+| D1 | Doctor Dashboard | IN PROGRESS | Doctor-scoped statistics and schedule; aligned responsive appointment/lab tables and polished KPI/header styling; browser verification pending |
+| D2 | Doctor Appointments | IN PROGRESS | Authenticated-doctor, date-filtered API schedule with retryable states and shared Doctor page styling; browser verification pending |
+| D3 | Doctor Patients | IN PROGRESS | Doctor-scoped searchable API directory, patient-profile navigation and shared Doctor page styling; browser verification pending |
+| D4 | Doctor Consultation | IN PROGRESS | Existing authorized consultation record with shared Doctor page styling; interactive draft, prescription, lab-order, completion and addendum workflow remains outstanding; browser verification pending |
+| D5 | Doctor Prescriptions | IN PROGRESS | Doctor-scoped API results, status filtering and shared Doctor page styling; creation, detail/print and cancellation actions remain outstanding; browser verification pending |
+| D6 | Doctor Lab Orders | IN PROGRESS | Doctor-scoped API orders, status filtering, returned result/critical data and shared Doctor page styling; order/cancel actions remain outstanding; browser verification pending |
+| D7 | Doctor Clinical History | IN PROGRESS | Scoped patient selection, API-backed timeline and shared Doctor page styling; browser verification pending |
 | P1 | Pharmacy Dashboard | TODO | |
 | P2 | Pharmacy Prescription Queue | TODO | |
 | P3 | Pharmacy Inventory | TODO | |
@@ -32,15 +32,15 @@
 | L4 | Lab Results | TODO | |
 | L5 | Lab Catalog | TODO | |
 | L6 | Lab Billing | TODO | |
-| A1 | Admin Dashboard | TODO | |
-| A2 | Admin Staff | TODO | |
-| A3 | Admin Users | TODO | |
-| A4 | Admin Departments | TODO | |
-| A5 | Admin Lab Catalog | TODO | |
-| A6 | Admin Suppliers | TODO | |
-| A7 | Admin Reports | TODO | |
-| A8 | Admin Settings | TODO | |
-| A9 | Admin Audit Log | TODO | |
+| A1 | Admin Dashboard | IN PROGRESS | Maps the endpoint's six actual fields and formats paise once; endpoint explicitly Admin-only; verified by AdminDomainTests (Admin allowed, other roles denied) and React production build; live browser verification pending |
+| A2 | Admin Staff | IN PROGRESS | API-backed paginated/filterable list and create/edit/deactivate workflows; creation atomically links a password-validated login and Doctor profile where applicable; 18 AdminDomainTests and React production build pass; live browser verification pending; legacy schedule editor awaits a supported API |
+| A3 | Admin Users | IN PROGRESS | Uses paginated `/users/`, complete-dataset search/role/status filters, password-reset modal and confirmed unlock; reset API validates Django password policy; 21 AdminDomainTests and build pass; browser verification pending; account creation remains in A2 Staff |
+| A4 | Admin Departments | IN PROGRESS | Paginated list, complete-dataset filters, create/edit for supported fields, fee paise conversion; head doctor shown read-only as backend serializer does not accept it; 21 AdminDomainTests and build pass; browser verification pending |
+| A5 | Admin Lab Catalog | IN PROGRESS | Paginated catalog list, search/category/status filters and price-only edit using paise; no add/deactivate controls; build pass; browser verification pending |
+| A6 | Admin Suppliers | IN PROGRESS | Read-only supplier and PO oversight with real paginated APIs, supported search/status/supplier filters, supplier rates metadata and PO detail; endpoint does not provide unit-price rates; build pass; browser verification pending |
+| A7 | Admin Reports | IN PROGRESS | Uses actual appointments/revenue/medicine response schemas, date validation, safe CSV export; unsupported outstanding/lab options are disabled and backend now returns 400; 21 AdminDomainTests and build pass; browser verification pending |
+| A8 | Admin Settings | IN PROGRESS | Uses seeded clinic/appointment/registration-fee keys, parses raw/JSON values, saves only changed non-empty values and preserves other keys; backend JSON-encodes strings for existing settings consumers; string/numeric serialization is covered by the 21 passing AdminDomainTests; unsupported import/export/reset omitted; build pass; browser verification pending |
+| A9 | Admin Audit Log | IN PROGRESS | Read-only backend pagination and server-side action/user/resource filters, correct entity field mappings, privacy-conscious metadata display; 21 AdminDomainTests and build pass; browser verification pending |
 | S2 | Patient Profile (shared) | TODO | Initial API-backed profile route and overview/history tabs added for Reception navigation; full legacy parity, including standalone lab order, remains outstanding |
 | S4 | DevTools | TODO | |
 | S5 | Styleguide | TODO | |

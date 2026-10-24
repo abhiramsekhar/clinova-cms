@@ -190,7 +190,19 @@ export const staffApi = {
     return res.data;
   },
   get: async (id) => {
-    const res = await apiClient.get(`/staff/${id}/`);
+    const res = await apiClient.get(`/staff/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
+  create: async (data) => {
+    const res = await apiClient.post('/staff/', data);
+    return res.data;
+  },
+  update: async (id, data) => {
+    const res = await apiClient.patch(`/staff/${encodeURIComponent(id)}/`, data);
+    return res.data;
+  },
+  deactivate: async (id) => {
+    const res = await apiClient.post(`/staff/${encodeURIComponent(id)}/deactivate/`);
     return res.data;
   },
   doctors: async () => {
@@ -221,6 +233,87 @@ export const billsApi = {
 export const departmentsApi = {
   list: async (params = {}) => {
     const res = await apiClient.get('/departments/', { params });
+    return res.data;
+  },
+  create: async (data) => {
+    const res = await apiClient.post('/departments/', data);
+    return res.data;
+  },
+  update: async (id, data) => {
+    const res = await apiClient.patch(`/departments/${encodeURIComponent(id)}/`, data);
+    return res.data;
+  },
+};
+
+export const usersApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/users/', { params });
+    return res.data;
+  },
+  resetPassword: async (id, password) => {
+    const res = await apiClient.post(`/users/${encodeURIComponent(id)}/reset-password/`, { password });
+    return res.data;
+  },
+  unlock: async (id) => {
+    const res = await apiClient.post(`/users/${encodeURIComponent(id)}/unlock/`);
+    return res.data;
+  },
+};
+
+export const labCatalogApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/lab-catalog/', { params });
+    return res.data;
+  },
+  update: async (id, data) => {
+    const res = await apiClient.patch(`/lab-catalog/${encodeURIComponent(id)}/`, data);
+    return res.data;
+  },
+};
+
+export const suppliersApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/suppliers/', { params });
+    return res.data;
+  },
+  rates: async (id) => {
+    const res = await apiClient.get(`/suppliers/${encodeURIComponent(id)}/rates/`);
+    return res.data;
+  },
+};
+
+export const purchaseOrdersApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/purchase-orders/', { params });
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/purchase-orders/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
+};
+
+export const reportsApi = {
+  generate: async (params = {}) => {
+    const res = await apiClient.get('/reports/generate/', { params });
+    return res.data;
+  },
+};
+
+export const settingsApi = {
+  list: async () => {
+    const res = await apiClient.get('/settings/');
+    return res.data;
+  },
+  update: async (data) => {
+    const res = await apiClient.patch('/settings/', data);
+    return res.data;
+  },
+};
+
+export const auditLogApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/audit-log/', { params });
     return res.data;
   },
 };

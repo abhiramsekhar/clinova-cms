@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import apiClient from '../../api/client';
+import { dashboardApi } from '../../api/resources';
 import Icon from '../../components/Icon';
 import { LoadingState, ErrorState } from '../../components/States';
 import { formatPaise } from '../../utils/format';
@@ -8,10 +8,7 @@ import { formatPaise } from '../../utils/format';
 export function AdminDashboard() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['adminDashboard'],
-    queryFn: async () => {
-      const res = await apiClient.get('/dashboard/admin/');
-      return res.data;
-    },
+    queryFn: dashboardApi.admin,
   });
 
   if (isLoading) {
@@ -23,12 +20,12 @@ export function AdminDashboard() {
   }
 
   const kpis = [
-    { label: 'Total Staff', value: data?.staffCount ?? '-', icon: 'icon-users', color: 'var(--teal-700)' },
+    { label: 'Active Staff', value: data?.staffCount ?? '-', icon: 'icon-users', color: 'var(--teal-700)' },
     { label: 'Active Doctors', value: data?.activeDoctors ?? '-', icon: 'icon-users', color: 'var(--info)' },
-    { label: "Today's Appointments", value: data?.appointmentsToday ?? '-', icon: 'icon-calendar', color: 'var(--primary)' },
+    { label: "Today's Appointments", value: data?.todayAppointments ?? '-', icon: 'icon-calendar', color: 'var(--primary)' },
     { label: 'Pending Lab Tests', value: data?.pendingLabs ?? '-', icon: 'icon-flask', color: 'var(--warning)' },
-    { label: 'Medicine Alerts', value: data?.stockAlerts ?? '-', icon: 'icon-alert-triangle', color: 'var(--danger)' },
-    { label: 'Total Revenue', value: formatPaise(data?.revenue?.totalPaise ?? 0), icon: 'icon-receipt', color: 'var(--success)' },
+    { label: 'Medicine Alerts', value: data?.lowStockMedicines ?? '-', icon: 'icon-alert-triangle', color: 'var(--danger)' },
+    { label: 'Total Revenue', value: formatPaise(data?.totalRevenuePaise ?? 0), icon: 'icon-receipt', color: 'var(--success)' },
   ];
 
   return (
@@ -56,43 +53,6 @@ export function AdminDashboard() {
           </div>
         ))}
       </div>
-
-      {/* Department Breakdown */}
-      {data?.departments && data.departments.length > 0 && (
-        <div className="glass card" style={{ padding: '1.5rem', borderRadius: '12px', marginTop: '1.5rem' }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text)', marginBottom: '1rem' }}>
-            Department Directory & Status
-          </h3>
-          <div className="table-wrapper">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Department</th>
-                  <th>Code</th>
-                  <th>Head Doctor</th>
-                  <th>Default Fee</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.departments.map((dept) => (
-                  <tr key={dept.id || dept.code}>
-                    <td style={{ fontWeight: 600 }}>{dept.name}</td>
-                    <td><code>{dept.code}</code></td>
-                    <td>{dept.headDoctorName || 'Not assigned'}</td>
-                    <td>{formatPaise(dept.defaultFee || 0)}</td>
-                    <td>
-                      <span className={`badge badge--${dept.isActive ? 'success' : 'neutral'}`}>
-                        {dept.isActive ? 'Active' : 'Inactive'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

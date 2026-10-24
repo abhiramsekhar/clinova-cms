@@ -9,7 +9,7 @@ from rest_framework.test import APITestCase, APIRequestFactory
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from cms_backendapp.models import Role, Staff, User
+from cms_backendapp.models import Department, Role, Setting, Staff, User
 from cms_backendapp.permissions import IsRole
 
 
@@ -181,6 +181,9 @@ class AdminDomainTests(APITestCase):
 
         self.role_admin = Role.objects.create(role_id="ADMIN", role_name="Administrator")
         self.role_doc = Role.objects.create(role_id="DOCTOR", role_name="Doctor")
+        self.role_receptionist = Role.objects.create(role_id="RECEPTIONIST", role_name="Receptionist")
+        Role.objects.create(role_id="PHARMACIST", role_name="Pharmacist")
+        Role.objects.create(role_id="LAB_TECH", role_name="Lab Technician")
 
         self.staff_admin = Staff.objects.create(
             staff_id="STF-ADM-01",
@@ -257,9 +260,209 @@ class AdminDomainTests(APITestCase):
 
     def test_staff_list_and_doctors_dropdown(self):
         headers = self.auth_headers(self.user_admin)
+        res_staff = self.client.get("/api/staff/", **headers)
+        self.assertEqual(res_staff.status_code, status.HTTP_200_OK)
+        self.assertIn("results", res_staff.data)
+
         res_docs = self.client.get("/api/staff/doctors/", **headers)
         self.assertEqual(res_docs.status_code, status.HTTP_200_OK)
         self.assertTrue(any(s["id"] == "STF-DOC-01" for s in res_docs.data))
+
+    def _user_for_role(self, role_id):
+        role, _ = Role.objects.get_or_create(
+            role_id=role_id,
+            defaults={"role_name": role_id.replace("_", " ").title()},
+        )
+        staff = Staff.objects.create(
+            name=f"{role_id} user",
+            email=f"{role_id.lower()}@clinova.test",
+            role=role,
+        )
+        user = User.objects.create(staff=staff, username=f"user-{role_id.lower()}", role=role)
+        user.set_password("Existing@Pass123")
+        user.save()
+        return user
+
+    def test_admin_dashboard_is_admin_only(self):
+        response = self.client.get("/api/dashboard/admin/", **self.auth_headers(self.user_admin))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data), {
+            "staffCount", "activeDoctors", "todayAppointments", "pendingLabs",
+            "lowStockMedicines", "totalRevenuePaise",
+        })
+
+        for role_id in ["DOCTOR", "RECEPTIONIST", "PHARMACIST", "LAB_TECH"]:
+            user = self.user_doc if role_id == "DOCTOR" else self._user_for_role(role_id)
+            denied = self.client.get("/api/dashboard/admin/", **self.auth_headers(user))
+            self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN, role_id)
+
+    def test_staff_list_permissions_and_filters(self):
+        admin_headers = self.auth_headers(self.user_admin)
+        response = self.client.get("/api/staff/?role=DOCTOR&is_active=true&search=Test", **admin_headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], "STF-DOC-01")
+
+        receptionist = self._user_for_role("RECEPTIONIST")
+        allowed = self.client.get("/api/staff/", **self.auth_headers(receptionist))
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK)
+
+        denied = self.client.get("/api/staff/", **self.auth_headers(self.user_doc))
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_creation_creates_linked_hashed_account(self):
+        headers = self.auth_headers(self.user_admin)
+        payload = {
+            "name": "New Receptionist",
+            "email": "new.receptionist@clinova.test",
+            "roleId": "RECEPTIONIST",
+            "departmentId": self.dept.department_id,
+            "username": "new.receptionist",
+            "password": "A-Unique-Staff-Password-2468!",
+        }
+        response = self.client.post("/api/staff/", payload, format="json", **headers)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        staff = Staff.objects.get(pk=response.data["id"])
+        account = User.objects.get(staff=staff)
+        self.assertEqual(account.role_id, "RECEPTIONIST")
+        self.assertTrue(account.check_password(payload["password"]))
+        self.assertNotEqual(account.password_hash, payload["password"])
+        self.assertNotIn("password", response.data)
+        self.assertNotIn("username", response.data)
+
+    def test_doctor_staff_creation_creates_doctor_profile(self):
+        from cms_doctorapp.models import Doctor
+
+        payload = {
+            "name": "New Doctor",
+            "email": "new.doctor@clinova.test",
+            "roleId": "DOCTOR",
+            "departmentId": self.dept.department_id,
+            "username": "new.doctor",
+            "password": "A-Unique-Doctor-Password-2468!",
+        }
+        response = self.client.post("/api/staff/", payload, format="json", **self.auth_headers(self.user_admin))
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        profile = Doctor.objects.get(staff_id=response.data["id"])
+        self.assertEqual(profile.department_id, self.dept.department_id)
+
+    def test_staff_create_rejects_invalid_or_duplicate_account_data(self):
+        headers = self.auth_headers(self.user_admin)
+        base = {
+            "name": "Staff Candidate", "email": "candidate@clinova.test",
+            "roleId": "RECEPTIONIST", "username": "candidate",
+            "password": "A-Unique-Candidate-Password-2468!",
+        }
+        invalid_role = self.client.post("/api/staff/", {**base, "roleId": "UNKNOWN"}, format="json", **headers)
+        self.assertEqual(invalid_role.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Staff.objects.filter(email=base["email"]).exists())
+
+        missing_password = self.client.post("/api/staff/", {**base, "password": ""}, format="json", **headers)
+        self.assertEqual(missing_password.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Staff.objects.filter(email=base["email"]).exists())
+
+        duplicate_username = self.client.post(
+            "/api/staff/",
+            {**base, "email": "another.candidate@clinova.test", "username": "docuser"},
+            format="json", **headers,
+        )
+        self.assertEqual(duplicate_username.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Staff.objects.filter(email="another.candidate@clinova.test").exists())
+
+    def test_staff_account_creation_rolls_back_staff_if_account_save_fails(self):
+        from unittest.mock import patch
+        from django.db import IntegrityError
+
+        payload = {
+            "name": "Rollback Candidate", "email": "rollback@clinova.test",
+            "roleId": "RECEPTIONIST", "username": "rollback.candidate",
+            "password": "A-Unique-Rollback-Password-2468!",
+        }
+        staff_count = Staff.objects.count()
+        with patch.object(User, "save", side_effect=IntegrityError("simulated account insert failure")):
+            with self.assertRaises(IntegrityError):
+                self.client.post("/api/staff/", payload, format="json", **self.auth_headers(self.user_admin))
+        self.assertEqual(Staff.objects.count(), staff_count)
+        self.assertFalse(Staff.objects.filter(email=payload["email"]).exists())
+
+    def test_staff_update_syncs_linked_user_role_and_doctor_department(self):
+        from cms_doctorapp.models import Doctor
+
+        create_payload = {
+            "name": "Editable Staff", "email": "editable@clinova.test",
+            "roleId": "DOCTOR", "departmentId": self.dept.department_id,
+            "username": "editable.staff", "password": "A-Unique-Editable-Password-2468!",
+        }
+        created = self.client.post("/api/staff/", create_payload, format="json", **self.auth_headers(self.user_admin))
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+        staff_id = created.data["id"]
+        other_dept = Department.objects.create(
+            name="Neurology", code="NEURO", default_fee="500.00"
+        )
+        updated = self.client.patch(
+            f"/api/staff/{staff_id}/",
+            {"roleId": "LAB_TECH", "departmentId": other_dept.department_id},
+            format="json", **self.auth_headers(self.user_admin),
+        )
+        self.assertEqual(updated.status_code, status.HTTP_200_OK, updated.data)
+        linked_user = User.objects.get(staff_id=staff_id)
+        self.assertEqual(linked_user.role_id, "LAB_TECH")
+        self.assertEqual(Doctor.objects.get(staff_id=staff_id).department_id, other_dept.department_id)
+
+    def test_staff_deactivation_and_future_appointment_restriction(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from cms_doctorapp.models import Doctor
+        from cms_recepapp.models import Appointment, Patient
+
+        headers = self.auth_headers(self.user_admin)
+        self.user_doc.is_active = True
+        self.staff_doc.is_active = True
+        self.user_doc.save(update_fields=["is_active"])
+        self.staff_doc.save(update_fields=["is_active"])
+        Doctor.objects.get_or_create(staff=self.staff_doc, defaults={"department": self.dept})
+        patient = Patient.objects.create(name="Test Patient", is_active=True)
+        Appointment.objects.create(
+            patient=patient,
+            doctor=Doctor.objects.get(staff=self.staff_doc),
+            department=self.dept,
+            appointment_date=timezone.localdate() + timedelta(days=1),
+            time_slot="10:00 AM",
+            status="SCHEDULED",
+        )
+        blocked = self.client.post(f"/api/staff/{self.staff_doc.staff_id}/deactivate/", format="json", **headers)
+        self.assertEqual(blocked.status_code, status.HTTP_400_BAD_REQUEST)
+        self.staff_doc.refresh_from_db()
+        self.user_doc.refresh_from_db()
+        self.assertTrue(self.staff_doc.is_active)
+        self.assertTrue(self.user_doc.is_active)
+
+        Appointment.objects.all().delete()
+        allowed = self.client.post(f"/api/staff/{self.staff_doc.staff_id}/deactivate/", format="json", **headers)
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK)
+        self.staff_doc.refresh_from_db()
+        self.user_doc.refresh_from_db()
+        self.assertFalse(self.staff_doc.is_active)
+        self.assertFalse(self.user_doc.is_active)
+
+    def test_staff_mutations_reject_non_admin_and_unsupported_methods(self):
+        headers = self.auth_headers(self.user_doc)
+        payload = {
+            "name": "Forbidden", "email": "forbidden@clinova.test", "roleId": "DOCTOR",
+            "username": "forbidden", "password": "A-Unique-Forbidden-Password-2468!",
+        }
+        denied_create = self.client.post("/api/staff/", payload, format="json", **headers)
+        self.assertEqual(denied_create.status_code, status.HTTP_403_FORBIDDEN)
+        denied_update = self.client.patch(
+            f"/api/staff/{self.staff_doc.staff_id}/", {"name": "Changed"}, format="json", **headers
+        )
+        self.assertEqual(denied_update.status_code, status.HTTP_403_FORBIDDEN)
+        denied_deactivate = self.client.post(
+            f"/api/staff/{self.staff_doc.staff_id}/deactivate/", format="json", **headers
+        )
+        self.assertEqual(denied_deactivate.status_code, status.HTTP_403_FORBIDDEN)
+        unsupported = self.client.delete(f"/api/staff/{self.staff_doc.staff_id}/", **self.auth_headers(self.user_admin))
+        self.assertEqual(unsupported.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def test_department_crud_with_default_fee_in_paise(self):
         headers = self.auth_headers(self.user_admin)
@@ -280,6 +483,7 @@ class AdminDomainTests(APITestCase):
         self.assertEqual(res_post.data["defaultFee"], 75000)
 
     def test_settings_dict_and_patch(self):
+        import json
         headers = self.auth_headers(self.user_admin)
 
         # GET settings
@@ -288,8 +492,16 @@ class AdminDomainTests(APITestCase):
         self.assertEqual(res.data.get("hospital.name"), '"Clinova Care"')
 
         # PATCH settings
-        res_patch = self.client.patch("/api/settings/", {"hospital.name": "Clinova Hospital"}, format="json", **headers)
+        res_patch = self.client.patch(
+            "/api/settings/",
+            {"hospital.name": "Clinova Hospital", "appointment.startTime": "10:30", "appointment.slotDuration": 45},
+            format="json", **headers,
+        )
         self.assertEqual(res_patch.status_code, status.HTTP_200_OK)
+        self.assertEqual(Setting.objects.get(key="appointment.startTime").value, json.dumps("10:30"))
+        self.assertEqual(json.loads(Setting.objects.get(key="appointment.startTime").value), "10:30")
+        self.assertEqual(json.loads(Setting.objects.get(key="appointment.slotDuration").value), 45)
+        self.assertEqual(json.loads(Setting.objects.get(key="hospital.name").value), "Clinova Hospital")
 
     def test_dashboard_kpis_and_reports(self):
         headers = self.auth_headers(self.user_admin)
@@ -301,6 +513,55 @@ class AdminDomainTests(APITestCase):
         res_rep = self.client.get("/api/reports/generate/?type=appointments", **headers)
         self.assertEqual(res_rep.status_code, status.HTTP_200_OK)
         self.assertIn("data", res_rep.data)
+
+    def test_reports_reject_unsupported_types_and_invalid_date_ranges(self):
+        headers = self.auth_headers(self.user_admin)
+        unsupported = self.client.get("/api/reports/generate/?type=lab", **headers)
+        self.assertEqual(unsupported.status_code, status.HTTP_400_BAD_REQUEST)
+        invalid_date = self.client.get("/api/reports/generate/?type=revenue&start=2026-02-31", **headers)
+        self.assertEqual(invalid_date.status_code, status.HTTP_400_BAD_REQUEST)
+        reversed_range = self.client.get(
+            "/api/reports/generate/?type=appointments&start=2026-02-02&end=2026-02-01", **headers
+        )
+        self.assertEqual(reversed_range.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_audit_log_serializer_mapping_search_filters_and_permissions(self):
+        from cms_backendapp.models import AuditLog
+
+        headers = self.auth_headers(self.user_admin)
+        AuditLog.objects.create(
+            log_id="LOG-ADMIN-01", user=self.user_admin, action="SAVE_SETTINGS",
+            entity_type="SETTINGS", entity_id="clinic.name", details={"updated": True},
+        )
+        AuditLog.objects.create(
+            log_id="LOG-ADMIN-02", user=self.user_doc, action="UNLOCK",
+            entity_type="USER", entity_id=self.user_doc.user_id, details={},
+        )
+        response = self.client.get(
+            "/api/audit-log/?search=superadmin&action=SAVE_SETTINGS&resource_type=SETTINGS",
+            **headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        entry = response.data["results"][0]
+        self.assertEqual(entry["resourceType"], "SETTINGS")
+        self.assertEqual(entry["resourceId"], "clinic.name")
+        self.assertEqual(entry["userName"], "superadmin")
+
+        too_long = self.client.get(f"/api/audit-log/?search={'x' * 101}", **headers)
+        self.assertEqual(too_long.status_code, status.HTTP_400_BAD_REQUEST)
+        forbidden = self.client.get("/api/audit-log/", **self.auth_headers(self.user_doc))
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_user_password_reset_rejects_password_that_fails_policy(self):
+        headers = self.auth_headers(self.user_admin)
+        response = self.client.post(
+            f"/api/users/{self.user_doc.user_id}/reset-password/",
+            {"password": "short"}, format="json", **headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user_doc.refresh_from_db()
+        self.assertTrue(self.user_doc.check_password("Doc@123"))
 
     def test_notifications_lifecycle(self):
         headers = self.auth_headers(self.user_admin)

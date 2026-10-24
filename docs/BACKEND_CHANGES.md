@@ -11,3 +11,9 @@
 - `cms_recepapp/views.py`: Doctor patient lists/details and appointment lists/details are restricted to the authenticated Doctor's assigned/seen patients and own appointments. Clinical-history lookup requires an authorized patient while preserving the full longitudinal history across clinicians.
 - `cms_doctorapp/views.py`: Doctor consultation, prescription, and lab-order querysets are always self-scoped, even when filters are omitted or altered. Consultation start, prescription creation, and lab-order creation reject cross-doctor/patient access while preserving existing allergy and workflow rules.
 - `docs/API_CONTRACT.md`: Document self-scoping and the serializer field shapes used by Doctor pages.
+
+## Admin Continuation (A3-A9)
+- `cms_backendapp/views_admin.py`: Apply configured Django password validation to Admin password resets; reject unsupported report types and invalid/reversed report dates; add length-validated server-side audit filters for action, actor username and entity fields; JSON-encode all settings values so string settings remain readable by existing consumers.
+- `cms_backendapp/serializers_admin.py`: Map audit resource fields to the actual `AuditLog.entity_type` and `entity_id` model fields.
+- `cms_backendapp/tests.py`: Cover reset-password validation, report type/date rejection, audit field mapping/search/permissions, and string/numeric settings serialization, in addition to the existing A1/A2 test coverage.
+- `docs/API_CONTRACT.md`: Record implemented report types, real settings keys, audit filters, and actual department/catalog/supplier/PO capabilities.
