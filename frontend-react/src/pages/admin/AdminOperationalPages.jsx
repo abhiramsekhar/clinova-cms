@@ -4,25 +4,26 @@ import Badge from '../../components/Badge';
 import { ConfirmDialog, DataTable, FormField, Modal, useToast } from '../../components/ui';
 import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { normalizeError } from '../../api/errors';
-import {
-  auditLogApi,
-  departmentsApi,
-  labCatalogApi,
-  purchaseOrdersApi,
-  reportsApi,
-  settingsApi,
-  suppliersApi,
-  usersApi,
-} from '../../api/resources';
+import { adminApi } from '../../api/admin';
+import { purchaseOrdersApi } from '../../api/resources';
 import { formatDate, formatDateTime, formatPaise } from '../../utils/format';
 
 const PAGE_SIZE = 200;
+
+const auditLogApi = { list: adminApi.auditLog };
+const departmentsApi = { list: adminApi.departments, create: (data) => adminApi.create('departments', data), update: (id, data) => adminApi.update('departments', id, data) };
+const labCatalogApi = { list: adminApi.labCatalog, create: (data) => adminApi.create('lab-catalog', data), update: (id, data) => adminApi.update('lab-catalog', id, data) };
+const reportsApi = { generate: adminApi.reports };
+const settingsApi = { list: adminApi.settings, update: adminApi.updateSettings };
+const suppliersApi = { list: adminApi.suppliers, create: (data) => adminApi.create('suppliers', data), update: (id, data) => adminApi.update('suppliers', id, data), rates: adminApi.supplierRates };
+const usersApi = { list: adminApi.users, resetPassword: adminApi.resetPassword, unlock: adminApi.unlock };
 
 async function fetchAllPages(list, params = {}) {
   const rows = [];
   let page = 1;
   while (true) {
     const response = await list({ ...params, page, page_size: PAGE_SIZE });
+    if (Array.isArray(response)) return page === 1 ? response : rows.concat(response);
     if (!response || !Array.isArray(response.results)) {
       throw new Error('The API returned an unexpected paginated response.');
     }
@@ -57,8 +58,10 @@ function errorMessage(error) {
   return normalizeError(error).message || 'The request failed. Please try again.';
 }
 
-function roleLabel(role) {
-  return ({ ADMIN: 'Administrator', DOCTOR: 'Doctor', RECEPTIONIST: 'Receptionist', PHARMACIST: 'Pharmacist', LAB_TECH: 'Lab Technician' })[role] || role || '—';
+function roleLabel(role, roleRows = []) {
+  return roleRows.find((item) => item.code === role)?.name
+    || ({ ADMIN: 'Administrator', DOCTOR: 'Doctor', RECEPTIONIST: 'Receptionist', PHARMACIST: 'Pharmacist', LAB_TECH: 'Lab Technician' })[role]
+    || role || '—';
 }
 
 function accountStatus(user) {
@@ -70,7 +73,7 @@ function accountStatus(user) {
 export function AdminUsersPage() {
   const client = useQueryClient();
   const toast = useToast();
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get('search') || '');
   const [roleFilter, setRoleFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [resetUser, setResetUser] = useState(null);
@@ -78,10 +81,11 @@ export function AdminUsersPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const rolesQuery = useQuery({ queryKey: ['adminRoles'], queryFn: adminApi.roles });
 
   const usersQuery = useQuery({ queryKey: ['adminUsers'], queryFn: () => fetchAllPages(usersApi.list) });
   const resetMutation = useMutation({
-    mutationFn: ({ id, nextPassword }) => usersApi.resetPassword(id, nextPassword),
+    mutationFn: ({ id, nextPassword, confirm }) => usersApi.resetPassword(id, nextPassword, confirm),
     onSuccess: async () => {
       toast.success('Password reset successfully.');
       setResetUser(null);
@@ -104,17 +108,17 @@ export function AdminUsersPage() {
 
   const rows = useMemo(() => (usersQuery.data || []).filter((user) => {
     const q = search.trim().toLowerCase();
-    const matchesSearch = !q || [user.username, user.staffName, user.staffId, user.role].some((value) => String(value || '').toLowerCase().includes(q));
+    const matchesSearch = !q || [user.username, user.staffName, user.staffEmail, user.staffId, user.role, roleLabel(user.role, rolesQuery.data)].some((value) => String(value || '').toLowerCase().includes(q));
     const matchesRole = !roleFilter || user.role === roleFilter;
     const state = accountStatus(user).label.toLowerCase();
     const matchesStatus = !statusFilter || state === statusFilter;
     return matchesSearch && matchesRole && matchesStatus;
-  }), [usersQuery.data, search, roleFilter, statusFilter]);
+  }), [usersQuery.data, search, roleFilter, statusFilter, rolesQuery.data]);
 
   const columns = useMemo(() => [
     { key: 'username', label: 'Username', sortable: true, render: (row) => <strong>{row.username}</strong> },
     { key: 'staffName', label: 'Staff Member', sortable: true, render: (row) => row.staffName || row.staffId || '—' },
-    { key: 'role', label: 'Role', sortable: true, render: (row) => roleLabel(row.role) },
+    { key: 'role', label: 'Role', sortable: true, render: (row) => roleLabel(row.role, rolesQuery.data) },
     { key: 'lastLogin', label: 'Last Login', sortable: true, render: (row) => formatDateTime(row.lastLogin) },
     { key: 'accountState', label: 'Status', render: (row) => <Badge status={accountStatus(row).status}>{accountStatus(row).label}</Badge> },
     { key: 'failedAttempts', label: 'Failed Attempts', render: (row) => row.failedAttempts ?? 0 },
@@ -124,21 +128,21 @@ export function AdminUsersPage() {
         {accountStatus(row).label === 'Locked' && <button type="button" className="btn btn--primary btn--sm" onClick={() => setUnlockUser(row)}>Unlock</button>}
       </div>
     ) },
-  ], []);
+  ], [rolesQuery.data]);
 
   const submitReset = (event) => {
     event.preventDefault();
     if (!password) return setPasswordError('Enter a new password.');
     if (password !== confirmPassword) return setPasswordError('Passwords do not match.');
-    resetMutation.mutate({ id: resetUser.id, nextPassword: password });
+    resetMutation.mutate({ id: resetUser.id, nextPassword: password, confirm: confirmPassword });
   };
 
   return (
     <div>
       <PageHeader title="User Accounts" subtitle="Review login status, reset passwords, and unlock locked accounts." />
       <FilterBar>
-        <FormField label="Search accounts" htmlFor="user-search"><input id="user-search" className="form-control" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Username, staff member or ID" /></FormField>
-        <FormField label="Role" htmlFor="user-role-filter"><select id="user-role-filter" className="form-control" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="">All roles</option>{['ADMIN', 'DOCTOR', 'RECEPTIONIST', 'PHARMACIST', 'LAB_TECH'].map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></FormField>
+        <FormField label="Search accounts" htmlFor="user-search"><input id="user-search" className="form-control" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Username, staff member, email or ID" /></FormField>
+        <FormField label="Role" htmlFor="user-role-filter"><select id="user-role-filter" className="form-control" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}><option value="">All roles</option>{(rolesQuery.data || []).map((role) => <option key={role.code} value={role.code}>{role.name}</option>)}</select></FormField>
         <FormField label="Status" htmlFor="user-status-filter"><select id="user-status-filter" className="form-control" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option><option value="active">Active</option><option value="locked">Locked</option><option value="disabled">Disabled</option></select></FormField>
         <button type="button" className="btn btn--ghost" onClick={() => { setSearch(''); setRoleFilter(''); setStatusFilter(''); }}>Reset filters</button>
       </FilterBar>
@@ -230,6 +234,8 @@ export function AdminDepartmentsPage() {
   );
 }
 
+const EMPTY_LAB_TEST = { name: '', code: '', category: '', sampleType: '', turnaroundHrs: '4', description: '', priceRupees: '', parameters: '[]', isActive: true };
+
 export function AdminLabCatalogPage() {
   const client = useQueryClient();
   const toast = useToast();
@@ -238,11 +244,18 @@ export function AdminLabCatalogPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [editing, setEditing] = useState(null);
   const [price, setPrice] = useState('');
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_LAB_TEST);
   const [formError, setFormError] = useState('');
   const catalogQuery = useQuery({ queryKey: ['adminLabCatalog'], queryFn: () => fetchAllPages(labCatalogApi.list) });
   const priceMutation = useMutation({
     mutationFn: ({ id, value }) => labCatalogApi.update(id, { price: value }),
     onSuccess: async () => { toast.success('Lab test price updated.'); setEditing(null); await client.invalidateQueries({ queryKey: ['adminLabCatalog'] }); },
+    onError: (error) => setFormError(errorMessage(error)),
+  });
+  const saveMutation = useMutation({
+    mutationFn: ({ id, data }) => id ? labCatalogApi.update(id, data) : labCatalogApi.create(data),
+    onSuccess: async (_data, variables) => { toast.success(variables.id ? 'Lab test updated.' : 'Lab test added.'); setEditing(null); setFormOpen(false); await client.invalidateQueries({ queryKey: ['adminLabCatalog'] }); },
     onError: (error) => setFormError(errorMessage(error)),
   });
   const categories = useMemo(() => [...new Set((catalogQuery.data || []).map((row) => row.category).filter(Boolean))].sort(), [catalogQuery.data]);
@@ -263,6 +276,19 @@ export function AdminLabCatalogPage() {
     { key: 'isActive', label: 'Status', render: (row) => <Badge status={row.isActive ? 'ACTIVE' : 'INACTIVE'}>{row.isActive ? 'Active' : 'Inactive'}</Badge> },
     { key: 'actions', label: 'Actions', render: (row) => <button type="button" className="btn btn--secondary btn--sm" onClick={() => { setEditing(row); setPrice((Number(row.price || 0) / 100).toFixed(2)); setFormError(''); }}>Edit Price</button> },
   ], []);
+  const openCreate = () => { setEditing(null); setForm({ ...EMPTY_LAB_TEST }); setFormError(''); setFormOpen(true); };
+  const submit = (event) => {
+    event.preventDefault();
+    const rupees = Number(form.priceRupees);
+    const turnaround = Number(form.turnaroundHrs);
+    let parameters;
+    try { parameters = JSON.parse(form.parameters); } catch { return setFormError('Parameters must be valid JSON.'); }
+    if (!form.name.trim()) return setFormError('Enter a test name.');
+    if (!Number.isInteger(turnaround) || turnaround < 1) return setFormError('Enter a turnaround time of at least one hour.');
+    if (!Number.isFinite(rupees) || rupees < 0) return setFormError('Enter a valid non-negative price.');
+    if (!Array.isArray(parameters)) return setFormError('Parameters must be a JSON array.');
+    saveMutation.mutate({ id: editing?.id || null, data: { name: form.name.trim(), code: form.code.trim() || null, category: form.category.trim(), sampleType: form.sampleType.trim(), turnaroundHrs: turnaround, description: form.description.trim(), price: Math.round(rupees * 100), parameters, isActive: form.isActive } });
+  };
   const submitPrice = (event) => {
     event.preventDefault();
     const rupees = Number(price);
@@ -271,7 +297,8 @@ export function AdminLabCatalogPage() {
   };
   return (
     <div>
-      <PageHeader title="Lab Test Catalog" subtitle="Review catalog details and update test prices. Catalog creation and deactivation are not part of this workflow." />
+      <PageHeader title="Lab Test Catalog" subtitle="Add lab tests and manage catalog details and prices." />
+      <div className="page-header__actions" style={{ marginBottom: '1rem' }}><button type="button" className="btn btn--primary" onClick={openCreate}>Add Lab Test</button></div>
       <FilterBar>
         <FormField label="Search tests" htmlFor="catalog-search"><input id="catalog-search" className="form-control" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, code, category or sample" /></FormField>
         <FormField label="Category" htmlFor="catalog-category"><select id="catalog-category" className="form-control" value={category} onChange={(event) => setCategory(event.target.value)}><option value="">All categories</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></FormField>
@@ -287,22 +314,54 @@ export function AdminLabCatalogPage() {
         </form>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem' }}><button type="button" className="btn btn--secondary" onClick={() => setEditing(null)} disabled={priceMutation.isPending}>Cancel</button><button type="submit" form="catalog-price-form" className="btn btn--primary" disabled={priceMutation.isPending}>{priceMutation.isPending ? 'Saving…' : 'Save Price'}</button></div>
       </Modal>
+      <Modal isOpen={formOpen} onClose={() => !saveMutation.isPending && setFormOpen(false)} title="Add Lab Test" size="lg">
+        <form id="catalog-create-form" onSubmit={submit} noValidate>
+          {formError && <p role="alert" style={{ color: 'var(--danger)' }}>{formError}</p>}
+          <div className="form-grid">
+            <FormField label="Test name" htmlFor="catalog-name" required><input id="catalog-name" className="form-control" maxLength={100} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></FormField>
+            <FormField label="Code" htmlFor="catalog-code" hint="Optional; must be unique."><input id="catalog-code" className="form-control" maxLength={20} value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} /></FormField>
+            <FormField label="Category" htmlFor="catalog-category-input"><input id="catalog-category-input" className="form-control" maxLength={50} value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></FormField>
+            <FormField label="Sample type" htmlFor="catalog-sample"><input id="catalog-sample" className="form-control" maxLength={50} value={form.sampleType} onChange={(event) => setForm({ ...form, sampleType: event.target.value })} /></FormField>
+            <FormField label="Turnaround (hours)" htmlFor="catalog-turnaround" required><input id="catalog-turnaround" type="number" min="1" step="1" className="form-control" value={form.turnaroundHrs} onChange={(event) => setForm({ ...form, turnaroundHrs: event.target.value })} required /></FormField>
+            <FormField label="Price (Rs)" htmlFor="catalog-create-price" required><input id="catalog-create-price" type="number" min="0" step="0.01" className="form-control" value={form.priceRupees} onChange={(event) => setForm({ ...form, priceRupees: event.target.value })} required /></FormField>
+            <FormField label="Description" htmlFor="catalog-description"><textarea id="catalog-description" className="form-control" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></FormField>
+            <FormField label="Parameters (JSON array)" htmlFor="catalog-parameters" hint={'Example: [{"name":"Hemoglobin"}]'}><textarea id="catalog-parameters" className="form-control" rows="4" value={form.parameters} onChange={(event) => setForm({ ...form, parameters: event.target.value })} /></FormField>
+          </div>
+        </form>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem' }}><button type="button" className="btn btn--secondary" onClick={() => setFormOpen(false)} disabled={saveMutation.isPending}>Cancel</button><button type="submit" form="catalog-create-form" className="btn btn--primary" disabled={saveMutation.isPending}>{saveMutation.isPending ? 'Saving...' : 'Add Lab Test'}</button></div>
+      </Modal>
     </div>
   );
 }
 
 export function AdminSuppliersPage() {
+  const client = useQueryClient();
+  const toast = useToast();
   const [supplierSearch, setSupplierSearch] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [supplierFormOpen, setSupplierFormOpen] = useState(false);
+  const [supplierFormError, setSupplierFormError] = useState('');
+  const [supplierForm, setSupplierForm] = useState({ name: '', contactPerson: '', phone: '', email: '', address: '', typicalMedicines: '', isActive: true });
   const supplierQuery = useQuery({ queryKey: ['adminSuppliers'], queryFn: () => fetchAllPages(suppliersApi.list) });
+  const createSupplierMutation = useMutation({
+    mutationFn: (data) => suppliersApi.create(data),
+    onSuccess: async () => { toast.success('Supplier added.'); setSupplierFormOpen(false); setSupplierFormError(''); setSupplierForm({ name: '', contactPerson: '', phone: '', email: '', address: '', typicalMedicines: '', isActive: true }); await client.invalidateQueries({ queryKey: ['adminSuppliers'] }); },
+    onError: (error) => setSupplierFormError(errorMessage(error)),
+  });
   const orderQuery = useQuery({ queryKey: ['adminPurchaseOrders', supplierFilter, statusFilter], queryFn: () => fetchAllPages(purchaseOrdersApi.list, { ...(supplierFilter ? { supplier: supplierFilter } : {}), ...(statusFilter ? { status: statusFilter } : {}) }) });
   const supplierRateQuery = useQuery({ queryKey: ['adminSupplierRates', selectedSupplier?.id], queryFn: () => suppliersApi.rates(selectedSupplier.id), enabled: Boolean(selectedSupplier) });
   const orderDetailQuery = useQuery({ queryKey: ['adminPurchaseOrder', selectedOrder?.id], queryFn: () => purchaseOrdersApi.get(selectedOrder.id), enabled: Boolean(selectedOrder) });
   const suppliers = supplierQuery.data || [];
   const visibleSuppliers = suppliers.filter((supplier) => !supplierSearch.trim() || supplier.name.toLowerCase().includes(supplierSearch.trim().toLowerCase()));
+  const openSupplierCreate = () => { setSupplierFormError(''); setSupplierFormOpen(true); };
+  const submitSupplier = (event) => {
+    event.preventDefault();
+    if (!supplierForm.name.trim()) return setSupplierFormError('Enter a supplier name.');
+    createSupplierMutation.mutate({ name: supplierForm.name.trim(), contactPerson: supplierForm.contactPerson.trim(), phone: supplierForm.phone.trim(), email: supplierForm.email.trim(), address: supplierForm.address.trim(), typicalMedicines: supplierForm.typicalMedicines.split(',').map((item) => item.trim()).filter(Boolean), isActive: supplierForm.isActive });
+  };
   const orders = orderQuery.data || [];
   const statuses = [...new Set(orders.map((order) => order.status).filter(Boolean))].sort();
   const supplierColumns = useMemo(() => [
@@ -325,11 +384,12 @@ export function AdminSuppliersPage() {
   ], []);
   return (
     <div>
-      <PageHeader title="Suppliers & Purchase Orders" subtitle="Read-only oversight of the supplier directory and purchase-order history." />
+      <PageHeader title="Suppliers & Purchase Orders" subtitle="Manage supplier records and review purchase-order history." />
       <section className="glass card" style={{ padding: '1rem', marginBottom: '1rem' }}>
         <h2 className="text-card-title">Supplier Directory</h2>
+        <div style={{ marginBottom: '1rem' }}><button type="button" className="btn btn--primary" onClick={openSupplierCreate}>Add Supplier</button></div>
         <div style={{ display: 'flex', gap: '.75rem', marginBottom: '1rem', maxWidth: 420 }}><input aria-label="Search suppliers" className="form-control" value={supplierSearch} onChange={(event) => setSupplierSearch(event.target.value)} placeholder="Search supplier name" /><button type="button" className="btn btn--ghost" onClick={() => setSupplierSearch('')}>Clear</button></div>
-        {supplierQuery.isLoading ? <LoadingState message="Loading suppliers..." /> : supplierQuery.error ? <ErrorState title="Unable to load suppliers" error={supplierQuery.error} onRetry={supplierQuery.refetch} /> : visibleSuppliers.length === 0 ? <EmptyState title={suppliers.length ? 'No suppliers match that search' : 'No suppliers found'} description={suppliers.length ? 'Try another supplier name.' : 'No supplier records are available.'} icon="icon-package" /> : <DataTable columns={supplierColumns} data={visibleSuppliers} perPage={10} />}
+        {supplierQuery.isLoading ? <LoadingState message="Loading suppliers..." /> : supplierQuery.error ? <ErrorState title="Unable to load suppliers" error={supplierQuery.error} onRetry={supplierQuery.refetch} /> : visibleSuppliers.length === 0 ? <EmptyState title={suppliers.length ? 'No suppliers match that search' : 'No suppliers found'} description={suppliers.length ? 'Try another supplier name.' : 'Add a supplier to populate the directory.'} icon="icon-package" action={!suppliers.length && <button type="button" className="btn btn--primary" onClick={openSupplierCreate}>Add Supplier</button>} /> : <DataTable columns={supplierColumns} data={visibleSuppliers} perPage={10} />}
       </section>
       <section className="glass card" style={{ padding: '1rem' }}>
         <h2 className="text-card-title">Purchase Order History</h2>
@@ -340,6 +400,21 @@ export function AdminSuppliersPage() {
         </FilterBar>
         {orderQuery.isLoading ? <LoadingState message="Loading purchase orders..." /> : orderQuery.error ? <ErrorState title="Unable to load purchase orders" error={orderQuery.error} onRetry={orderQuery.refetch} /> : orders.length === 0 ? <EmptyState title="No purchase orders found" description="There are no orders matching the selected filters." icon="icon-clipboard-list" /> : <DataTable columns={orderColumns} data={orders} perPage={10} />}
       </section>
+      <Modal isOpen={supplierFormOpen} onClose={() => !createSupplierMutation.isPending && setSupplierFormOpen(false)} title="Add Supplier" size="lg">
+        <form id="supplier-create-form" onSubmit={submitSupplier} noValidate>
+          {supplierFormError && <p role="alert" style={{ color: 'var(--danger)' }}>{supplierFormError}</p>}
+          <div className="form-grid">
+            <FormField label="Supplier name" htmlFor="supplier-name" required><input id="supplier-name" className="form-control" maxLength={100} value={supplierForm.name} onChange={(event) => setSupplierForm({ ...supplierForm, name: event.target.value })} required /></FormField>
+            <FormField label="Contact person" htmlFor="supplier-contact"><input id="supplier-contact" className="form-control" maxLength={100} value={supplierForm.contactPerson} onChange={(event) => setSupplierForm({ ...supplierForm, contactPerson: event.target.value })} /></FormField>
+            <FormField label="Phone" htmlFor="supplier-phone"><input id="supplier-phone" className="form-control" maxLength={20} value={supplierForm.phone} onChange={(event) => setSupplierForm({ ...supplierForm, phone: event.target.value })} /></FormField>
+            <FormField label="Email" htmlFor="supplier-email"><input id="supplier-email" type="email" className="form-control" maxLength={100} value={supplierForm.email} onChange={(event) => setSupplierForm({ ...supplierForm, email: event.target.value })} /></FormField>
+            <FormField label="Address" htmlFor="supplier-address"><textarea id="supplier-address" className="form-control" value={supplierForm.address} onChange={(event) => setSupplierForm({ ...supplierForm, address: event.target.value })} /></FormField>
+            <FormField label="Medicine references" htmlFor="supplier-medicines" hint="Separate names with commas."><textarea id="supplier-medicines" className="form-control" value={supplierForm.typicalMedicines} onChange={(event) => setSupplierForm({ ...supplierForm, typicalMedicines: event.target.value })} /></FormField>
+            <label className="form-check"><input type="checkbox" checked={supplierForm.isActive} onChange={(event) => setSupplierForm({ ...supplierForm, isActive: event.target.checked })} /> Active</label>
+          </div>
+        </form>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem' }}><button type="button" className="btn btn--secondary" onClick={() => setSupplierFormOpen(false)} disabled={createSupplierMutation.isPending}>Cancel</button><button type="submit" form="supplier-create-form" className="btn btn--primary" disabled={createSupplierMutation.isPending}>{createSupplierMutation.isPending ? 'Saving...' : 'Add Supplier'}</button></div>
+      </Modal>
       <Modal isOpen={Boolean(selectedSupplier)} onClose={() => setSelectedSupplier(null)} title={selectedSupplier?.name || 'Supplier details'}>
         {supplierRateQuery.isLoading ? <LoadingState message="Loading supplier details..." /> : supplierRateQuery.error ? <ErrorState title="Unable to load supplier details" error={supplierRateQuery.error} onRetry={supplierRateQuery.refetch} /> : <div className="form-grid"><div><strong>Contact</strong><div>{selectedSupplier?.contactPerson || '—'}</div></div><div><strong>Phone</strong><div>{selectedSupplier?.phone || '—'}</div></div><div><strong>Email</strong><div>{selectedSupplier?.email || '—'}</div></div><div><strong>Address</strong><div>{selectedSupplier?.address || '—'}</div></div><div style={{ gridColumn: '1 / -1' }}><strong>Typical medicine references</strong><div>{Array.isArray(supplierRateQuery.data?.typicalMedicines) && supplierRateQuery.data.typicalMedicines.length ? supplierRateQuery.data.typicalMedicines.join(', ') : 'None listed'}</div><p className="text-caption">The supplier rates endpoint returns medicine references only; it does not return unit-price rates.</p></div></div>}
       </Modal>

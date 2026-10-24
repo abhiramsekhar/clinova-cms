@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { dashboardApi } from '../../api/resources';
+import { adminApi } from '../../api/admin';
 import Icon from '../../components/Icon';
 import { LoadingState, ErrorState } from '../../components/States';
 import { formatPaise } from '../../utils/format';
@@ -8,7 +8,7 @@ import { formatPaise } from '../../utils/format';
 export function AdminDashboard() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['adminDashboard'],
-    queryFn: dashboardApi.admin,
+    queryFn: adminApi.dashboard,
   });
 
   if (isLoading) {
