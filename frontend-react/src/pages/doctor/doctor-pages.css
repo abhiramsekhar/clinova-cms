@@ -137,6 +137,12 @@
   background: #eff8f8;
 }
 
+.doctor-kpi-card__glyph {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
 .doctor-kpi-card__value {
   color: var(--doctor-ink);
   font-size: 1.7rem;

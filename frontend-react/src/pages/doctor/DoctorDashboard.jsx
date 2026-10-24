@@ -81,7 +81,7 @@ export function DoctorDashboard() {
           <div key={kpi.label} className="glass card doctor-kpi-card">
             <div className="doctor-kpi-card__top">
               <span>{kpi.label}</span>
-              <div className="doctor-kpi-card__icon" style={{ color: kpi.color }}><Icon name={kpi.icon} size={19} /></div>
+              <div className="doctor-kpi-card__icon"><Icon className="doctor-kpi-card__glyph" name={kpi.icon} size={20} style={{ color: kpi.color }} /></div>
             </div>
             <div className="doctor-kpi-card__value">{kpi.value ?? 0}</div>
           </div>
