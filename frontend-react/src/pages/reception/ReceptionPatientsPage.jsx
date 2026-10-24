@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import apiClient from '../../api/client';
 import { patientsApi } from '../../api/resources';
 import Icon from '../../components/Icon';
 import { Modal, FormField, DataTable, useToast } from '../../components/ui';
+import { ErrorState } from '../../components/States';
 import { Format, formatAge, formatDate } from '../../utils/format';
 import {
   validateName,
@@ -21,6 +22,23 @@ import {
   GENDERS,
 } from '../../utils/validators';
 
+function registrationErrorDetails(error) {
+  const body = error?.response?.data;
+  const fieldErrors = {};
+  if (body && typeof body === 'object') {
+    for (const [key, value] of Object.entries(body)) {
+      if (['detail', 'error', 'message', 'code'].includes(key)) continue;
+      fieldErrors[key] = (Array.isArray(value) ? value : [value]).map(String).join(', ');
+    }
+  }
+  const message = body?.detail || body?.error || body?.message ||
+    Object.entries(fieldErrors).map(([key, value]) => `${key}: ${value}`).join('; ') ||
+    (error?.message === 'Network Error'
+      ? 'The registration request could not reach the server. Check the connection and try again.'
+      : 'Failed to register patient. Please try again.');
+  return { message, fieldErrors };
+}
+
 export function ReceptionPatientsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -29,6 +47,7 @@ export function ReceptionPatientsPage() {
   const queryClient = useQueryClient();
 
   const [search, setSearch] = useState(initialSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch.trim());
   const [genderFilter, setGenderFilter] = useState('');
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState(1); // 1: Details, 2: Payment, 3: Completed
@@ -48,13 +67,26 @@ export function ReceptionPatientsPage() {
   };
   const [formData, setFormData] = useState(initialForm);
   const [formErrors, setFormErrors] = useState({});
+  const [registrationError, setRegistrationError] = useState('');
+  const [pendingPatientData, setPendingPatientData] = useState(null);
   const [registeredPatient, setRegisteredPatient] = useState(null);
+
+  useEffect(() => {
+    setSearch(searchParams.get('search') || '');
+  }, [searchParams]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   // Fetch Patients
   const { data: patientsData, isLoading, error, refetch } = useQuery({
-    queryKey: ['patientsList'],
+    queryKey: ['patientsList', debouncedSearch],
     queryFn: async () => {
-      const res = await patientsApi.list();
+      const params = { page_size: 200 };
+      if (debouncedSearch) params.search = debouncedSearch;
+      const res = await patientsApi.list(params);
       return Array.isArray(res) ? res : (res?.results || []);
     },
   });
@@ -93,6 +125,7 @@ export function ReceptionPatientsPage() {
       cleaned = value.replace(/[^\d+\s()-]/g, '');
     }
     setFormData((prev) => ({ ...prev, [field]: cleaned }));
+    setRegistrationError('');
     if (formErrors[field]) {
       setFormErrors((prev) => ({ ...prev, [field]: '' }));
     }
@@ -138,26 +171,29 @@ export function ReceptionPatientsPage() {
     }
 
     setFormErrors({});
-    setWizardStep(2);
+    precheckMutation.mutate(result.data);
   };
+
+  const precheckMutation = useMutation({
+    mutationFn: (patient) => patientsApi.precheck(patient),
+    onSuccess: (_data, patient) => {
+      setRegistrationError('');
+      setPendingPatientData(patient);
+      setWizardStep(2);
+    },
+    onError: (err) => {
+      const { message, fieldErrors } = registrationErrorDetails(err);
+      if (Object.keys(fieldErrors).length) setFormErrors((previous) => ({ ...previous, ...fieldErrors }));
+      setRegistrationError(message);
+      toast.error(message);
+    },
+  });
 
   // Registration Mutation
   const registerMutation = useMutation({
     mutationFn: async () => {
       const payload = {
-        patient: {
-          name: formData.name.trim(),
-          phone: formData.phone.trim(),
-          dateOfBirth: formData.dateOfBirth,
-          gender: formData.gender,
-          address: formData.address?.trim() || null,
-          allergies: formData.allergies
-            ? formData.allergies.split(',').map((s) => s.trim()).filter(Boolean)
-            : [],
-          bloodGroup: formData.bloodGroup || null,
-          guardianName: isMinor ? formData.guardianName.trim() : null,
-          guardianPhone: isMinor ? formData.guardianPhone.trim() : null,
-        },
+        patient: pendingPatientData,
         payment: {
           method: formData.paymentMethod,
         },
@@ -166,23 +202,22 @@ export function ReceptionPatientsPage() {
     },
     onSuccess: (data) => {
       const createdPatient = data.patient || data;
+      setRegistrationError('');
       setRegisteredPatient(createdPatient);
       setWizardStep(3);
-      queryClient.invalidateQueries(['patientsList']);
+      queryClient.invalidateQueries({ queryKey: ['patientsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
       toast.success(`Fee collected. ${createdPatient.name} registered successfully!`);
     },
     onError: (err) => {
-      const msg =
-        err?.response?.data?.detail ||
-        err?.response?.data?.error ||
-        err?.response?.data?.message ||
-        (err?.response?.data && typeof err.response.data === 'object'
-          ? Object.entries(err.response.data)
-              .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-              .join('; ')
-          : null) ||
-        'Failed to register patient. Please try again.';
-      toast.error(msg);
+      const { message, fieldErrors } = registrationErrorDetails(err);
+      if (Object.keys(fieldErrors).length) {
+        setFormErrors((previous) => ({ ...previous, ...fieldErrors }));
+        setWizardStep(1);
+      }
+      setRegistrationError(message);
+      toast.error(message);
     },
   });
 
@@ -191,6 +226,8 @@ export function ReceptionPatientsPage() {
     setWizardStep(1);
     setFormData(initialForm);
     setFormErrors({});
+    setRegistrationError('');
+    setPendingPatientData(null);
     setRegisteredPatient(null);
   };
 
@@ -242,7 +279,10 @@ export function ReceptionPatientsPage() {
         <button
           type="button"
           className="btn btn--ghost btn--sm"
-          onClick={() => navigate(`/shared/patient-profile?id=${r.id || r.patient_id}`)}
+          onClick={() => navigate({
+            pathname: '/shared/patient-profile',
+            search: new URLSearchParams({ id: String(r.id || r.patient_id) }).toString(),
+          })}
         >
           View
         </button>
@@ -317,24 +357,28 @@ export function ReceptionPatientsPage() {
 
       {/* Patients DataTable */}
       <div className="glass card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
-        <DataTable
-          columns={columns}
-          data={filteredPatients}
-          isLoading={isLoading}
-          emptyTitle="No patients found"
-          emptyMessage="No patient records match your search criteria."
-          emptyAction={
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => setIsRegisterOpen(true)}
-            >
-              Register New Patient
-            </button>
-          }
-          perPage={10}
-          defaultSort="createdAt"
-        />
+        {error ? (
+          <ErrorState title="Unable to load patients" error={error} onRetry={refetch} />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={filteredPatients}
+            isLoading={isLoading}
+            emptyTitle="No patients found"
+            emptyMessage="No patient records match your search criteria."
+            emptyAction={
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={() => setIsRegisterOpen(true)}
+              >
+                Register New Patient
+              </button>
+            }
+            perPage={10}
+            defaultSort="createdAt"
+          />
+        )}
       </div>
 
       {/* Registration Wizard Modal */}
@@ -352,6 +396,7 @@ export function ReceptionPatientsPage() {
       >
         {wizardStep === 1 && (
           <form onSubmit={handleProceedToPayment} noValidate>
+            {registrationError && <p role="alert" className="form-error" style={{ color: 'var(--danger)', margin: '0 0 1rem' }}>{registrationError}</p>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
               <FormField label="Full Name" required error={formErrors.name}>
                 <input
@@ -495,9 +540,14 @@ export function ReceptionPatientsPage() {
               <button type="button" className="btn btn--secondary" onClick={resetModal}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn--primary">
-                <span>Continue to Payment</span>
-                <Icon name="icon-arrow-right" size={16} />
+              <button type="submit" className="btn btn--primary" disabled={precheckMutation.isPending}>
+                {precheckMutation.isPending ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span className="spinner spinner-sm" /> Checking details...
+                  </span>
+                ) : (
+                  <><span>Continue to Payment</span><Icon name="icon-arrow-right" size={16} /></>
+                )}
               </button>
             </div>
           </form>
@@ -541,6 +591,8 @@ export function ReceptionPatientsPage() {
                 <option value="UPI">UPI (Google Pay, PhonePe, Paytm)</option>
               </select>
             </FormField>
+
+            {registrationError && <p role="alert" className="form-error" style={{ color: 'var(--danger)', margin: '1rem 0 0' }}>{registrationError}</p>}
 
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginTop: '2rem' }}>
               <button

@@ -6,19 +6,29 @@ import { appointmentsApi, patientsApi, staffApi, billsApi } from '../../api/reso
 import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
 import { Modal, ConfirmDialog, FormField, DataTable, useToast } from '../../components/ui';
+import { ErrorState } from '../../components/States';
 import { Format, formatTime, formatDate } from '../../utils/format';
 
+function localDateString(date = new Date()) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 10);
+}
+
 export function ReceptionAppointmentsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const preselectedPatientId = searchParams.get('patientId');
+  const initialSearch = searchParams.get('search') || '';
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = localDateString();
   const [filterDate, setFilterDate] = useState(todayStr);
   const [filterDoctor, setFilterDoctor] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(initialSearch);
+
+  useEffect(() => {
+    setSearchQuery(searchParams.get('search') || '');
+  }, [searchParams]);
 
   // Modals state
   const [isWizardOpen, setIsWizardOpen] = useState(false);
@@ -38,6 +48,7 @@ export function ReceptionAppointmentsPage() {
   // Collect Fee Modal state
   const [feeModalAppt, setFeeModalAppt] = useState(null);
   const [feePaymentMethod, setFeePaymentMethod] = useState('CASH');
+  const [feeAmountRupees, setFeeAmountRupees] = useState('');
 
   // Cancel Modal state
   const [cancelModalAppt, setCancelModalAppt] = useState(null);
@@ -48,10 +59,10 @@ export function ReceptionAppointmentsPage() {
   const [noShowAppt, setNoShowAppt] = useState(null);
 
   // Fetch Appointments
-  const { data: appointmentsData, isLoading: apptsLoading, refetch: refetchAppts } = useQuery({
+  const { data: appointmentsData, isLoading: apptsLoading, error: apptsError, refetch: refetchAppts } = useQuery({
     queryKey: ['appointmentsList', filterDate, filterDoctor, filterStatus, searchQuery],
     queryFn: async () => {
-      const params = {};
+      const params = { page_size: 200 };
       if (filterDate) params.date = filterDate;
       if (filterDoctor) params.doctor = filterDoctor;
       if (filterStatus) params.status = filterStatus;
@@ -62,7 +73,7 @@ export function ReceptionAppointmentsPage() {
   });
 
   // Fetch Doctors
-  const { data: doctorsData } = useQuery({
+  const { data: doctorsData, isLoading: doctorsLoading, error: doctorsError, refetch: refetchDoctors } = useQuery({
     queryKey: ['activeDoctors'],
     queryFn: async () => {
       const res = await staffApi.doctors();
@@ -71,10 +82,10 @@ export function ReceptionAppointmentsPage() {
   });
 
   // Fetch Patients for Wizard
-  const { data: patientsData } = useQuery({
+  const { data: patientsData, isLoading: patientsLoading, error: patientsError, refetch: refetchPatients } = useQuery({
     queryKey: ['allPatientsForWizard'],
     queryFn: async () => {
-      const res = await patientsApi.list();
+      const res = await patientsApi.list({ page_size: 200 });
       return Array.isArray(res) ? res : (res?.results || []);
     },
   });
@@ -84,7 +95,7 @@ export function ReceptionAppointmentsPage() {
   const patientsList = Array.isArray(patientsData) ? patientsData : [];
 
   // Slot board for selected doctor & date
-  const { data: slotBoardData, isLoading: slotsLoading } = useQuery({
+  const { data: slotBoardData, isLoading: slotsLoading, error: slotsError, refetch: refetchSlots } = useQuery({
     queryKey: ['slotBoard', bookingData.doctor?.id, bookingData.date],
     queryFn: async () => {
       if (!bookingData.doctor?.id) return [];
@@ -98,18 +109,27 @@ export function ReceptionAppointmentsPage() {
   });
 
   // Next walk-in slot
-  const { data: nextWalkinSlot, isLoading: walkinLoading } = useQuery({
+  const { data: nextWalkinSlot, isLoading: walkinLoading, error: walkinError, refetch: refetchWalkinSlot } = useQuery({
     queryKey: ['nextWalkinSlot', bookingData.doctor?.id],
     queryFn: async () => {
       if (!bookingData.doctor?.id) return null;
-      try {
-        return await appointmentsApi.nextWalkinSlot({ doctor: bookingData.doctor.id });
-      } catch {
-        return null;
-      }
+      return await appointmentsApi.nextWalkinSlot({ doctor: bookingData.doctor.id });
     },
     enabled: !!(bookingData.doctor?.id && bookingData.mode === 'WALK_IN'),
   });
+
+  const feeBillId = feeModalAppt?.billId;
+  const { data: feeBill, isLoading: feeBillLoading, error: feeBillError, refetch: refetchFeeBill } = useQuery({
+    queryKey: ['receptionAppointmentBill', feeBillId],
+    queryFn: () => billsApi.get(feeBillId),
+    enabled: !!feeBillId,
+  });
+
+  useEffect(() => {
+    if (feeBill?.balanceDue != null) {
+      setFeeAmountRupees((feeBill.balanceDue / 100).toFixed(2));
+    }
+  }, [feeBill?.id, feeBill?.balanceDue]);
 
   // Pre-select patient if query param passed
   useEffect(() => {
@@ -130,7 +150,9 @@ export function ReceptionAppointmentsPage() {
     mutationFn: async (id) => await appointmentsApi.checkIn(id),
     onSuccess: () => {
       toast.success('Patient checked in successfully.');
-      queryClient.invalidateQueries(['appointmentsList']);
+      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to check in patient.';
@@ -145,7 +167,11 @@ export function ReceptionAppointmentsPage() {
       toast.success('Appointment cancelled.');
       setCancelModalAppt(null);
       setCancelReason('');
-      queryClient.invalidateQueries(['appointmentsList']);
+      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['billsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to cancel appointment.';
@@ -158,7 +184,9 @@ export function ReceptionAppointmentsPage() {
     onSuccess: () => {
       toast.success('Marked as No-show. Slot released.');
       setNoShowAppt(null);
-      queryClient.invalidateQueries(['appointmentsList']);
+      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to mark as no-show.';
@@ -172,7 +200,12 @@ export function ReceptionAppointmentsPage() {
     onSuccess: () => {
       toast.success('Payment received. You can check the patient in now.');
       setFeeModalAppt(null);
-      queryClient.invalidateQueries(['appointmentsList']);
+      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['billsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentBill'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to record payment.';
@@ -198,7 +231,11 @@ export function ReceptionAppointmentsPage() {
     onSuccess: (data) => {
       setBookedResult(data.appointment || data);
       setWizardStep(5);
-      queryClient.invalidateQueries(['appointmentsList']);
+      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['billsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
       toast.success('Appointment booked and fee collected!');
     },
     onError: (err) => {
@@ -267,11 +304,7 @@ export function ReceptionAppointmentsPage() {
       key: 'fee',
       label: 'Fee',
       width: '110px',
-      render: (r) => {
-        const bill = Array.isArray(r.bills) && r.bills.length > 0 ? r.bills[0] : r.bill;
-        if (!bill) return <span style={{ color: 'var(--muted)' }}>-</span>;
-        return <Badge status={bill.payment_status || bill.status} />;
-      },
+      render: (r) => r.billStatus ? <Badge status={r.billStatus} /> : <span style={{ color: 'var(--muted)' }}>-</span>,
     },
     {
       key: 'status',
@@ -285,8 +318,7 @@ export function ReceptionAppointmentsPage() {
       width: '230px',
       render: (r) => {
         if (r.status !== 'SCHEDULED') return null;
-        const bill = Array.isArray(r.bills) && r.bills.length > 0 ? r.bills[0] : r.bill;
-        const isPaid = bill && (bill.payment_status === 'PAID' || bill.status === 'PAID');
+        const isPaid = r.billStatus === 'PAID';
 
         return (
           <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
@@ -294,7 +326,12 @@ export function ReceptionAppointmentsPage() {
               <button
                 type="button"
                 className="btn btn--primary btn--sm"
-                onClick={() => setFeeModalAppt(r)}
+                onClick={() => {
+                  setFeeAmountRupees('');
+                  setFeeModalAppt(r);
+                }}
+                disabled={!r.billId}
+                title={!r.billId ? 'No bill is linked to this appointment.' : undefined}
               >
                 Collect Fee
               </button>
@@ -461,27 +498,31 @@ export function ReceptionAppointmentsPage() {
 
       {/* Appointments DataTable */}
       <div className="glass card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
-        <DataTable
-          columns={columns}
-          data={apptsList}
-          isLoading={apptsLoading}
-          emptyTitle="No appointments found"
-          emptyMessage="No scheduled appointments found for this selection."
-          emptyAction={
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => {
-                setIsWizardOpen(true);
-                setWizardStep(1);
-              }}
-            >
-              Book New Appointment
-            </button>
-          }
-          perPage={10}
-          defaultSort="time"
-        />
+        {apptsError ? (
+          <ErrorState title="Unable to load appointments" error={apptsError} onRetry={refetchAppts} />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={apptsList}
+            isLoading={apptsLoading}
+            emptyTitle="No appointments found"
+            emptyMessage="No scheduled appointments found for this selection."
+            emptyAction={
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={() => {
+                  setIsWizardOpen(true);
+                  setWizardStep(1);
+                }}
+              >
+                Book New Appointment
+              </button>
+            }
+            perPage={10}
+            defaultSort="time"
+          />
+        )}
       </div>
 
       {/* 5-Step Booking Wizard Modal */}
@@ -544,7 +585,11 @@ export function ReceptionAppointmentsPage() {
             </div>
 
             <div style={{ maxHeight: '260px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: '8px' }}>
-              {wizardFilteredPatients.length === 0 ? (
+              {patientsError ? (
+                <ErrorState title="Unable to load patients" error={patientsError} onRetry={refetchPatients} />
+              ) : patientsLoading ? (
+                <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--muted)' }}>Loading patients…</div>
+              ) : wizardFilteredPatients.length === 0 ? (
                 <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--muted)' }}>
                   No patients found.
                 </div>
@@ -618,7 +663,13 @@ export function ReceptionAppointmentsPage() {
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '260px', overflowY: 'auto' }}>
-              {doctorsList.map((doc) => {
+              {doctorsError ? (
+                <ErrorState title="Unable to load doctors" error={doctorsError} onRetry={refetchDoctors} />
+              ) : doctorsLoading ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--muted)' }}>Loading doctors…</div>
+              ) : doctorsList.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--muted)' }}>No active doctors are available.</div>
+              ) : doctorsList.map((doc) => {
                 const isSelected = bookingData.doctor?.id === doc.id;
                 const feePaise = doc.consultation_fee || doc.consultationFee || 30000;
                 return (
@@ -726,7 +777,9 @@ export function ReceptionAppointmentsPage() {
                   textAlign: 'center',
                 }}
               >
-                {walkinLoading ? (
+                {walkinError ? (
+                  <ErrorState title="Unable to check walk-in availability" error={walkinError} onRetry={refetchWalkinSlot} />
+                ) : walkinLoading ? (
                   <div>Looking up next walk-in slot...</div>
                 ) : nextWalkinSlot ? (
                   <div>
@@ -761,7 +814,9 @@ export function ReceptionAppointmentsPage() {
                 </FormField>
 
                 <FormField label="Available Time Slot" required>
-                  {slotsLoading ? (
+                  {slotsError ? (
+                    <ErrorState title="Unable to load time slots" error={slotsError} onRetry={refetchSlots} />
+                  ) : slotsLoading ? (
                     <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--muted)' }}>
                       Loading slots...
                     </div>
@@ -983,13 +1038,13 @@ export function ReceptionAppointmentsPage() {
           title="Collect Consultation Fee"
           size="sm"
         >
-          {(() => {
-            const bill = Array.isArray(feeModalAppt.bills) && feeModalAppt.bills.length > 0
-              ? feeModalAppt.bills[0]
-              : feeModalAppt.bill;
-            const balancePaise = bill ? Math.round((bill.total_amount - (bill.amount_paid || 0)) * 100) : 30000;
-
-            return (
+          {feeBillError ? (
+            <ErrorState title="Unable to load appointment bill" error={feeBillError} onRetry={refetchFeeBill} />
+          ) : feeBillLoading ? (
+            <div role="status" style={{ padding: '1rem', textAlign: 'center' }}>Loading bill details…</div>
+          ) : !feeBillId ? (
+            <ErrorState title="No bill linked to this appointment" error="Reload the appointment list and check its billing record." />
+          ) : feeBill ? (
               <div>
                 <div style={{ padding: '1rem', background: 'var(--surface, #f8fafc)', borderRadius: '8px', marginBottom: '1rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
@@ -1003,10 +1058,23 @@ export function ReceptionAppointmentsPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '0.5rem' }}>
                     <span style={{ color: 'var(--muted)' }}>Balance Due</span>
                     <strong style={{ color: 'var(--danger)', fontSize: '1.1rem' }}>
-                      {Format.money(balancePaise)}
+                      {Format.money(feeBill.balanceDue)}
                     </strong>
                   </div>
                 </div>
+
+                <FormField label="Payment Amount (₹)" required>
+                  <input
+                    type="number"
+                    className="form-input"
+                    step="0.01"
+                    min="0.01"
+                    max={(feeBill.balanceDue / 100).toFixed(2)}
+                    value={feeAmountRupees}
+                    onChange={(e) => setFeeAmountRupees(e.target.value)}
+                    required
+                  />
+                </FormField>
 
                 <FormField label="Payment Method" required>
                   <select
@@ -1031,21 +1099,25 @@ export function ReceptionAppointmentsPage() {
                   <button
                     type="button"
                     className="btn btn--primary"
-                    disabled={collectFeeMutation.isPending}
-                    onClick={() =>
+                    disabled={collectFeeMutation.isPending || !feeBill.balanceDue || !feeAmountRupees}
+                    onClick={() => {
+                      const amountPaise = Math.round(Number(feeAmountRupees) * 100);
+                      if (!Number.isFinite(amountPaise) || amountPaise <= 0 || amountPaise > feeBill.balanceDue) {
+                        toast.error(`Enter an amount greater than zero and no more than ${Format.money(feeBill.balanceDue)}.`);
+                        return;
+                      }
                       collectFeeMutation.mutate({
-                        billId: bill.id || bill.bill_id,
-                        amount: balancePaise,
+                        billId: feeBill.id,
+                        amount: amountPaise,
                         method: feePaymentMethod,
-                      })
-                    }
+                      });
+                    }}
                   >
-                    Receive {Format.money(balancePaise)}
+                    Receive Payment
                   </button>
                 </div>
               </div>
-            );
-          })()}
+          ) : null}
         </Modal>
       )}
 

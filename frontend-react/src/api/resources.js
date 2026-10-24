@@ -119,6 +119,71 @@ export const appointmentsApi = {
   },
 };
 
+export const consultationsApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/consultations/', { params });
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/consultations/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
+  getOrCreate: async (data) => {
+    const res = await apiClient.post('/consultations/get-or-create/', data);
+    return res.data;
+  },
+  saveDraft: async (id, data) => {
+    const res = await apiClient.patch(`/consultations/${encodeURIComponent(id)}/save-draft/`, data);
+    return res.data;
+  },
+  complete: async (id, data = {}) => {
+    const res = await apiClient.post(`/consultations/${encodeURIComponent(id)}/complete/`, data);
+    return res.data;
+  },
+  addendum: async (id, data) => {
+    const res = await apiClient.post(`/consultations/${encodeURIComponent(id)}/addendum/`, data);
+    return res.data;
+  },
+};
+
+export const prescriptionsApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/prescriptions/', { params });
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/prescriptions/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
+  create: async (data) => {
+    const res = await apiClient.post('/prescriptions/', data);
+    return res.data;
+  },
+  cancel: async (id, data = {}) => {
+    const res = await apiClient.post(`/prescriptions/${encodeURIComponent(id)}/cancel/`, data);
+    return res.data;
+  },
+};
+
+export const labOrdersApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/lab-orders/', { params });
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/lab-orders/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
+  create: async (data) => {
+    const res = await apiClient.post('/lab-orders/', data);
+    return res.data;
+  },
+  cancel: async (id, data = {}) => {
+    const res = await apiClient.post(`/lab-orders/${encodeURIComponent(id)}/cancel/`, data);
+    return res.data;
+  },
+};
+
 export const staffApi = {
   list: async (params = {}) => {
     const res = await apiClient.get('/staff/', { params });

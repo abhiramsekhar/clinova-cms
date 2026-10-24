@@ -5,6 +5,7 @@ import { billsApi } from '../../api/resources';
 import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
 import { Modal, FormField, DataTable, useToast, openPrintView } from '../../components/ui';
+import { ErrorState } from '../../components/States';
 import { Format, formatDate, formatDateTime } from '../../utils/format';
 
 export function ReceptionBillingPage() {
@@ -23,11 +24,12 @@ export function ReceptionBillingPage() {
   const [payMethod, setPayMethod] = useState('UPI');
 
   // Fetch Bills
-  const { data: billsData, isLoading, refetch } = useQuery({
-    queryKey: ['billsList', statusFilter],
+  const { data: billsData, isLoading, error, refetch } = useQuery({
+    queryKey: ['billsList', statusFilter, searchQuery.trim()],
     queryFn: async () => {
-      const params = {};
+      const params = { page_size: 200 };
       if (statusFilter) params.status = statusFilter;
+      if (searchQuery.trim()) params.search = searchQuery.trim();
       const res = await billsApi.list(params);
       return Array.isArray(res) ? res : (res?.results || []);
     },
@@ -58,7 +60,9 @@ export function ReceptionBillingPage() {
     onSuccess: () => {
       toast.success('Payment received successfully.');
       setPayBill(null);
-      queryClient.invalidateQueries(['billsList']);
+      queryClient.invalidateQueries({ queryKey: ['billsList'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to record payment.';
@@ -315,15 +319,19 @@ export function ReceptionBillingPage() {
 
       {/* Bills DataTable */}
       <div className="glass card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
-        <DataTable
-          columns={columns}
-          data={filteredBills}
-          isLoading={isLoading}
-          emptyTitle="No invoices found"
-          emptyMessage="No billing records found matching your criteria."
-          perPage={10}
-          defaultSort="createdAt"
-        />
+        {error ? (
+          <ErrorState title="Unable to load invoices" error={error} onRetry={refetch} />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={filteredBills}
+            isLoading={isLoading}
+            emptyTitle="No invoices found"
+            emptyMessage="No billing records found matching your criteria."
+            perPage={10}
+            defaultSort="createdAt"
+          />
+        )}
       </div>
 
       {/* Invoice View Modal */}

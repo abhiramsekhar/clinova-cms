@@ -72,13 +72,13 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/patients/` | RECEPTIONIST, DOCTOR, ADMIN | Search: `?search=` (name, MRN, phone). Doctor sees only own patients. |
-| GET | `/patients/{id}/` | RECEPTIONIST, DOCTOR, ADMIN | Detail with allergies, chronicConditions |
+| GET | `/patients/` | RECEPTIONIST, DOCTOR, ADMIN | Search: `?search=` (name, MRN, phone). Filter: `?doctor_scope=mine`. Doctor-role requests are always restricted to patients assigned to or seen by that doctor. |
+| GET | `/patients/{id}/` | RECEPTIONIST, DOCTOR, ADMIN | Detail with allergies, chronicConditions; Doctor access is restricted to assigned/seen patients. |
 | POST | `/patients/` | RECEPTIONIST | Register patient. Validates: guardian for minors, duplicate check. |
 | POST | `/patients/register-and-pay/` | RECEPTIONIST | Register + collect registration fee in one transaction. Body: `{ patient: {...}, payment: { method } }` |
 | PATCH | `/patients/{id}/` | RECEPTIONIST | Update patient details |
 | POST | `/patients/precheck/` | RECEPTIONIST | Validate before payment (guardian, duplicates). Returns 200 or 400. |
-| GET | `/patients/{id}/clinical-history/` | DOCTOR | Consultations, prescriptions, lab results for one patient |
+| GET | `/patients/{id}/clinical-history/` | DOCTOR | Full longitudinal consultations, prescriptions, and lab-order history for an assigned/seen patient; access to the patient is Doctor-scoped, and history includes records from all clinicians. Array field names are snake_case (`record_id`, `visit_date`, `prescription_id`, `created_at`, `test_id`, `ordered_date`). |
 
 ---
 
@@ -86,8 +86,8 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/appointments/` | RECEPTIONIST, DOCTOR, ADMIN | Filter: `?date=&doctor=&patient=&status=`. Doctor sees only own. |
-| GET | `/appointments/{id}/` | RECEPTIONIST, DOCTOR | Detail with patient name, doctor name, bill info |
+| GET | `/appointments/` | RECEPTIONIST, DOCTOR, ADMIN | Filter: `?date=&doctor=&patient=&status=`. Doctor-role requests are always restricted to the authenticated doctor's appointments. Paginated results expose `id`, `patientId`, `patientName`, `patientMrn`, `time`, `date`, and `status`. |
+| GET | `/appointments/{id}/` | RECEPTIONIST, DOCTOR | Detail with patient name, doctor name, bill info; Doctor access is restricted to own appointments. |
 | POST | `/appointments/book/` | RECEPTIONIST | Book WITHOUT payment (creates UNPAID bill) |
 | POST | `/appointments/book-and-pay/` | RECEPTIONIST | Book + collect consultation fee. Body: `{ patientId, doctorId, mode, date?, time?, type?, reason?, payment: { method } }`. Returns `{ appointment, bill }` |
 | POST | `/appointments/{id}/cancel/` | RECEPTIONIST | Body: `{ reason, refund? }`. Cancels bill if applicable. |
@@ -104,8 +104,8 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/consultations/{id}/` | DOCTOR | Detail |
-| GET | `/consultations/?patient={id}` | DOCTOR | List for a patient |
+| GET | `/consultations/{id}/` | DOCTOR | Detail; Doctor access is restricted to own consultations. |
+| GET | `/consultations/?patient={id}&doctor=me` | DOCTOR | Paginated list for an authorized patient; response fields are camelCase, including `patientName`, `visitDate`, `vitalSigns`, `isCompleted`, and `appointmentId`. Doctor access is always self-scoped. |
 | POST | `/consultations/get-or-create/` | DOCTOR | Body: `{ appointmentId }`. Creates draft if not exists, sets appointment to IN_PROGRESS |
 | PATCH | `/consultations/{id}/save-draft/` | DOCTOR | Saves symptoms, diagnosis, notes, vitalSigns (isCompleted=false only) |
 | POST | `/consultations/{id}/complete/` | DOCTOR | Locks consultation, sets appointment to COMPLETED |
@@ -117,8 +117,8 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/prescriptions/` | DOCTOR, PHARMACIST | Filter: `?doctor=&patient=&status=`. PHARMACIST sees all PENDING. |
-| GET | `/prescriptions/{id}/` | DOCTOR, PHARMACIST | Detail with items, patient info, allergy info |
+| GET | `/prescriptions/` | DOCTOR, PHARMACIST | Filter: `?doctor=&patient=&status=`. Doctor-role requests are always self-scoped; fields include `dateIssued`, `patientName`, `items`, and `status`. PHARMACIST sees all matching records. |
+| GET | `/prescriptions/{id}/` | DOCTOR, PHARMACIST | Detail with items, patient info, allergy info; Doctor access is restricted to own prescriptions. |
 | POST | `/prescriptions/` | DOCTOR | Create. Body: `{ consultationId?, patientId, doctorId, items: [...], notes?, explicitOverride? }`. Allergy check runs. |
 | POST | `/prescriptions/{id}/cancel/` | DOCTOR | Only PENDING |
 | POST | `/prescriptions/{id}/dispense/` | PHARMACIST | Body: `{ payment: { status, method?, amountReceived?, transactionRef? } }`. FEFO stock deduction. Creates bill + payment. |
@@ -176,8 +176,8 @@
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/lab-orders/` | DOCTOR, LAB_TECH | Filter: `?doctor=&patient=&status=`. Doctor sees own. LAB_TECH sees all. |
-| GET | `/lab-orders/{id}/` | DOCTOR, LAB_TECH | Detail with test info, patient info, results |
+| GET | `/lab-orders/` | DOCTOR, LAB_TECH | Filter: `?doctor=&patient=&status=`. Doctor-role requests are always self-scoped; fields include `orderedDate`, `testName`, `patientName`, `status`, `results`, and `isCritical`. LAB_TECH sees all matching records. |
+| GET | `/lab-orders/{id}/` | DOCTOR, LAB_TECH | Detail with test info, patient info, results; Doctor access is restricted to own orders. |
 | POST | `/lab-orders/` | DOCTOR | Order a test. Body: `{ patientId, doctorId, testId, priority?, notes? }`. Creates UNPAID bill. |
 | POST | `/lab-orders/{id}/update-status/` | LAB_TECH | Body: `{ status, technicianId }`. For SAMPLE_COLLECTED, PROCESSING. |
 | POST | `/lab-orders/{id}/enter-result/` | LAB_TECH | Body: `{ results: { paramName: value, ... }, technicianId }`. Auto-flags critical. Notifies doctor. |
@@ -211,7 +211,7 @@
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
 | GET | `/dashboard/admin/` | ADMIN | Aggregate stats: staff count, today's appts, pending labs, chart data, dept overview, stock alerts |
-| GET | `/dashboard/doctor/` | DOCTOR | Own stats: pending/completed appts, pending labs, active Rx |
+| GET | `/dashboard/doctor/` | DOCTOR | Own `todayAppointments`, `patients` (assigned or seen by this doctor), `pendingAppointments` (today's SCHEDULED/CHECKED_IN), `completedConsultations` (today's COMPLETED appointments), `pendingLabs` and newest-first `pendingLabsList` (all statuses except COMPLETED/CANCELLED, capped at 5), and `activePrescriptions` (PENDING). Requires the authenticated account to have a linked Doctor profile. |
 | GET | `/dashboard/reception/` | RECEPTIONIST | Today stats: checked-in, scheduled, completed, unpaid bills |
 | GET | `/dashboard/pharmacy/` | PHARMACIST | Pending Rx count, low stock, expiring, today's dispensed |
 | GET | `/dashboard/lab/` | LAB_TECH | Queue: pending, in-progress, completed today, critical |

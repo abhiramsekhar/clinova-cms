@@ -82,15 +82,15 @@ class PatientViewSet(viewsets.ModelViewSet):
         # Doctor scope: if doctor or ?doctor_scope=mine
         doctor_scope = self.request.query_params.get("doctor_scope")
         user_role = getattr(self.request.user.role, "role_id", str(self.request.user.role)) if self.request.user else ""
-        if doctor_scope == "mine" or (user_role == "DOCTOR" and self.request.query_params.get("scope") == "mine"):
+        if user_role == "DOCTOR" or doctor_scope == "mine" or self.request.query_params.get("scope") == "mine":
             staff = getattr(self.request.user, "staff", None)
-            if staff:
-                doc = Doctor.objects.filter(staff=staff).first()
-                if doc:
-                    qs = qs.filter(
-                        Q(assigned_doctor=doc) |
-                        Q(appointments__doctor=doc)
-                    ).distinct()
+            doc = Doctor.objects.filter(staff=staff).first() if staff else None
+            if not doc:
+                return qs.none()
+            qs = qs.filter(
+                Q(assigned_doctor=doc) |
+                Q(appointments__doctor=doc)
+            ).distinct()
 
         return qs
 
@@ -181,7 +181,8 @@ class PatientViewSet(viewsets.ModelViewSet):
     def clinical_history(self, request, pk=None):
         """Retrieves consultations, prescriptions, and lab orders for a patient."""
         patient = self.get_object()
-
+        # Access to the patient is doctor-scoped in get_queryset above. Once authorized,
+        # the longitudinal history intentionally includes records from all clinicians.
         consultations = list(ConsultationRecord.objects.filter(patient=patient).order_by("-visit_date").values(
             "record_id", "visit_date", "diagnosis", "symptoms", "notes", "doctor__staff__name"
         ))
@@ -231,7 +232,14 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
         # Filter: doctor
         doctor_param = self.request.query_params.get("doctor") or self.request.query_params.get("doctorId")
-        if doctor_param == "me" and hasattr(self.request.user, "staff"):
+        user_role = getattr(self.request.user.role, "role_id", str(self.request.user.role)) if self.request.user else ""
+        if user_role == "DOCTOR":
+            staff = getattr(self.request.user, "staff", None)
+            doctor = Doctor.objects.filter(staff=staff).first() if staff else None
+            if not doctor:
+                return qs.none()
+            qs = qs.filter(doctor=doctor)
+        elif doctor_param == "me" and hasattr(self.request.user, "staff"):
             qs = qs.filter(doctor__staff=self.request.user.staff)
         elif doctor_param:
             qs = qs.filter(Q(doctor__staff__staff_id=doctor_param) | Q(doctor__doctor_id=doctor_param))
@@ -521,6 +529,26 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         if appt.status != Appointment.Status.SCHEDULED:
             return Response(
                 {"detail": f"Only SCHEDULED appointments can be marked as no-show (current: {appt.status}).", "code": "INVALID_STATE"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            scheduled_time = datetime.time.fromisoformat(str(appt.time_slot))
+        except ValueError:
+            return Response(
+                {"detail": "The appointment time is invalid; it cannot be marked as no-show.", "code": "INVALID_APPOINTMENT_TIME"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        scheduled_at = datetime.datetime.combine(appt.appointment_date, scheduled_time)
+        scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
+        grace_ends_at = scheduled_at + datetime.timedelta(minutes=NO_SHOW_GRACE_MIN)
+        if timezone.localtime() < grace_ends_at:
+            return Response(
+                {
+                    "detail": f"An appointment can be marked as no-show {NO_SHOW_GRACE_MIN} minutes after its scheduled time.",
+                    "code": "NO_SHOW_GRACE_PERIOD",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

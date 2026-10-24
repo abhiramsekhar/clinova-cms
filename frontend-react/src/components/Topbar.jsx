@@ -1,9 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import Icon from './Icon';
 import { useAuth } from '../auth/AuthContext';
 import { displayName, getInitials, formatDateTime } from '../utils/format';
-import { notificationsApi } from '../api/resources';
+import { appointmentsApi, notificationsApi, patientsApi } from '../api/resources';
+import { ErrorState } from './States';
 
 const ROLE_LABELS = {
   ADMIN: 'Administrator',
@@ -21,15 +23,44 @@ export function Topbar({ onToggleSidebar }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const menuRef = useRef(null);
   const notifRef = useRef(null);
+  const searchRef = useRef(null);
   const searchInputRef = useRef(null);
 
   const roleLabel = ROLE_LABELS[role] || role || 'Staff';
   const name = user?.staffName || user?.username || 'User';
   const initials = getInitials(name);
   const formattedName = displayName(name, role);
+  const patientSearch = searchQuery.trim();
+
+  const { data: patientSearchData, isFetching: isSearchingPatients, error: patientSearchError, refetch: retryPatientSearch } = useQuery({
+    queryKey: ['globalPatientSearch', role, patientSearch],
+    queryFn: () => patientsApi.list({
+      search: patientSearch,
+      page_size: 5,
+      ...(role === 'DOCTOR' ? { doctor_scope: 'mine' } : {}),
+    }),
+    enabled: ['RECEPTIONIST', 'DOCTOR'].includes(role) && patientSearch.length >= 2 && searchOpen,
+  });
+  const patientSearchResults = Array.isArray(patientSearchData)
+    ? patientSearchData
+    : (patientSearchData?.results || []);
+  const {
+    data: appointmentSearchData,
+    isFetching: isSearchingAppointments,
+    error: appointmentSearchError,
+    refetch: retryAppointmentSearch,
+  } = useQuery({
+    queryKey: ['globalAppointmentSearch', patientSearch],
+    queryFn: () => appointmentsApi.list({ search: patientSearch, page_size: 5 }),
+    enabled: role === 'RECEPTIONIST' && patientSearch.length >= 2 && searchOpen,
+  });
+  const appointmentSearchResults = Array.isArray(appointmentSearchData)
+    ? appointmentSearchData
+    : (appointmentSearchData?.results || []);
 
   // Fetch notifications
   const fetchNotifications = async () => {
@@ -59,6 +90,9 @@ export function Topbar({ onToggleSidebar }) {
       }
       if (notifRef.current && !notifRef.current.contains(event.target)) {
         setNotifMenuOpen(false);
+      }
+      if (searchRef.current && !searchRef.current.contains(event.target)) {
+        setSearchOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -131,6 +165,7 @@ export function Topbar({ onToggleSidebar }) {
             onSubmit={handleSearchSubmit}
             className="search-bar"
             id="global-search"
+            ref={searchRef}
             style={{ maxWidth: '340px', position: 'relative' }}
           >
             <span className="search-bar__icon">
@@ -141,8 +176,15 @@ export function Topbar({ onToggleSidebar }) {
               type="text"
               className="search-bar__input"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={role === 'ADMIN' ? 'Search users, staff...' : 'Search patients...'}
+              onFocus={() => setSearchOpen(true)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setSearchOpen(true);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setSearchOpen(false);
+              }}
+              placeholder={role === 'ADMIN' ? 'Search users, staff...' : role === 'RECEPTIONIST' ? 'Search patients or appointments...' : 'Search patients...'}
               aria-label="Search"
               id="search-input"
             />
@@ -150,7 +192,11 @@ export function Topbar({ onToggleSidebar }) {
               <button
                 type="button"
                 className="btn btn--ghost btn--icon"
-                onClick={() => setSearchQuery('')}
+                onClick={() => {
+                  setSearchQuery('');
+                  setSearchOpen(true);
+                  searchInputRef.current?.focus();
+                }}
                 style={{
                   position: 'absolute',
                   right: '48px',
@@ -167,6 +213,78 @@ export function Topbar({ onToggleSidebar }) {
             <kbd className="search-bar__kbd" style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)' }}>
               ⌘K
             </kbd>
+            {searchOpen && ['RECEPTIONIST', 'DOCTOR'].includes(role) && patientSearch.length >= 2 && (
+              <div
+                className="dropdown__menu is-open glass"
+                role="listbox"
+                aria-label={role === 'RECEPTIONIST' ? 'Patient and appointment search results' : 'Patient search results'}
+                style={{ position: 'absolute', top: 'calc(100% + 8px)', left: 0, right: 0, zIndex: 1100, maxHeight: '360px', overflowY: 'auto' }}
+              >
+                {isSearchingPatients ? (
+                  <div className="dropdown__item" role="status">Searching patients…</div>
+                ) : patientSearchError ? (
+                  <div style={{ padding: '0.75rem' }}>
+                    <ErrorState title="Patient search failed" error={patientSearchError} onRetry={retryPatientSearch} />
+                  </div>
+                ) : patientSearchResults.length === 0 ? (
+                  role === 'RECEPTIONIST' ? null : <div className="dropdown__item" role="status">No matching patients found</div>
+                ) : patientSearchResults.map((patient) => (
+                  <button
+                    key={patient.id || patient.patient_id}
+                    type="button"
+                    role="option"
+                    aria-selected="false"
+                    className="dropdown__item btn btn--ghost"
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', width: '100%', padding: '0.65rem 0.85rem', textAlign: 'left' }}
+                    onClick={() => {
+                      const id = patient.id || patient.patient_id;
+                      navigate({ pathname: '/shared/patient-profile', search: new URLSearchParams({ id: String(id) }).toString() });
+                      setSearchOpen(false);
+                      setSearchQuery('');
+                    }}
+                  >
+                    <strong>{patient.name}</strong>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>MRN: {patient.mrn || '—'} · {patient.phone || 'No phone'}</span>
+                  </button>
+                ))}
+                {role === 'RECEPTIONIST' && isSearchingAppointments && (
+                  <div className="dropdown__item" role="status">Searching appointments…</div>
+                )}
+                {role === 'RECEPTIONIST' && appointmentSearchError && (
+                  <div style={{ padding: '0.75rem' }}>
+                    <ErrorState title="Appointment search failed" error={appointmentSearchError} onRetry={retryAppointmentSearch} />
+                  </div>
+                )}
+                {role === 'RECEPTIONIST' && appointmentSearchResults.length > 0 && (
+                  <>
+                    <div className="dropdown__item" style={{ fontWeight: 700, pointerEvents: 'none' }}>Appointments</div>
+                    {appointmentSearchResults.map((appointment) => (
+                      <button
+                        key={appointment.id || appointment.appointment_id}
+                        type="button"
+                        role="option"
+                        aria-selected="false"
+                        className="dropdown__item btn btn--ghost"
+                        style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', width: '100%', padding: '0.65rem 0.85rem', textAlign: 'left' }}
+                        onClick={() => {
+                          navigate(`/reception/appointments?search=${encodeURIComponent(patientSearch)}`);
+                          setSearchOpen(false);
+                          setSearchQuery('');
+                        }}
+                      >
+                        <strong>{appointment.patientName || appointment.patient?.name || 'Appointment'}</strong>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                          {appointment.date} · {appointment.time} · {appointment.doctorName || appointment.doctor?.name || 'Doctor'} · {appointment.status}
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {role === 'RECEPTIONIST' && !isSearchingPatients && !isSearchingAppointments && !patientSearchError && !appointmentSearchError && patientSearchResults.length === 0 && appointmentSearchResults.length === 0 && (
+                  <div className="dropdown__item" role="status">No matching patients or appointments found</div>
+                )}
+              </div>
+            )}
           </form>
         )}
       </div>

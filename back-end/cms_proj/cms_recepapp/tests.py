@@ -9,6 +9,8 @@ Comprehensive automated test suite for Reception group:
 
 import datetime
 from decimal import Decimal
+from unittest.mock import patch
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -359,6 +361,31 @@ class ReceptionGroupTests(APITestCase):
 
         self.bill.refresh_from_db()
         self.assertEqual(self.bill.payment_status, Bill.PaymentStatus.CANCELLED)
+
+    def test_no_show_requires_configured_grace_period(self):
+        url = f"/api/appointments/{self.appointment.appointment_id}/no-show/"
+        headers = self.auth_headers(self.user_rec)
+        before_grace = timezone.make_aware(
+            datetime.datetime.combine(self.today, datetime.time(10, 14)),
+            timezone.get_current_timezone(),
+        )
+        with patch("cms_recepapp.views.timezone.now", return_value=before_grace):
+            early_response = self.client.post(url, {}, format="json", **headers)
+
+        self.assertEqual(early_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(early_response.data["code"], "NO_SHOW_GRACE_PERIOD")
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, Appointment.Status.SCHEDULED)
+
+        grace_elapsed = timezone.make_aware(
+            datetime.datetime.combine(self.today, datetime.time(10, 15)),
+            timezone.get_current_timezone(),
+        )
+        with patch("cms_recepapp.views.timezone.now", return_value=grace_elapsed):
+            response = self.client.post(url, {}, format="json", **headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], Appointment.Status.NO_SHOW)
 
     # --- Billing & Payment Tests ---
     def test_bill_integer_paise_conversion(self):

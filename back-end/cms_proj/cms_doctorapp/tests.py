@@ -310,3 +310,209 @@ class DoctorDomainTests(APITestCase):
         # Unauthenticated request -> 401
         res_anon = self.client.get("/api/consultations/")
         self.assertEqual(res_anon.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_doctor_dashboard_stats_are_scoped_and_match_dashboard_contract(self):
+        from cms_backendapp.models import Staff
+
+        # Add a completed visit, one pending lab, and one pending prescription for this doctor.
+        Appointment.objects.create(
+            appointment_id="appt-complete",
+            patient=self.patient,
+            doctor=self.doctor,
+            department=self.dept,
+            appointment_date=datetime.date.today(),
+            time_slot="11:00",
+            status=Appointment.Status.COMPLETED,
+        )
+        ConsultationRecord.objects.create(
+            record_id="con-own",
+            patient=self.patient,
+            doctor=self.doctor,
+            appointment=self.appointment,
+            visit_date=datetime.date.today(),
+            diagnosis="Own doctor record",
+        )
+        LabTest.objects.create(
+            test_id="lab-own",
+            patient=self.patient,
+            doctor=self.doctor,
+            appointment=self.appointment,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.PROCESSING,
+        )
+        LabTest.objects.create(
+            test_id="lab-in-progress",
+            patient=self.patient,
+            doctor=self.doctor,
+            appointment=self.appointment,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.IN_PROGRESS,
+        )
+        Prescription.objects.create(
+            prescription_id="rx-own",
+            patient=self.patient,
+            doctor=self.doctor,
+            appointment=self.appointment,
+            date_issued=datetime.date.today(),
+            status=Prescription.Status.PENDING,
+        )
+
+        other_staff = Staff.objects.create(
+            staff_id="staff-doc-02",
+            name="Dr. Other",
+            email="other.doc@clinova.test",
+            role=self.role_doc,
+            department=self.dept,
+            is_active=True,
+        )
+        other_doctor = Doctor.objects.create(
+            doctor_id="doc-02",
+            staff=other_staff,
+            department=self.dept,
+            consultation_fee=Decimal("500.00"),
+        )
+        other_patient = Patient.objects.create(
+            patient_id="pat-other",
+            mrn="CLN-2025-0002",
+            name="Other Doctor Patient",
+            dob=datetime.date(1990, 1, 1),
+            gender="F",
+            assigned_doctor=other_doctor,
+            is_active=True,
+        )
+        other_appointment = Appointment.objects.create(
+            appointment_id="appt-other",
+            patient=other_patient,
+            doctor=other_doctor,
+            department=self.dept,
+            appointment_date=datetime.date.today(),
+            time_slot="12:00",
+            status=Appointment.Status.SCHEDULED,
+        )
+        ConsultationRecord.objects.create(
+            record_id="con-other",
+            patient=other_patient,
+            doctor=other_doctor,
+            appointment=other_appointment,
+            visit_date=datetime.date.today(),
+            diagnosis="Other doctor record",
+        )
+        LabTest.objects.create(
+            test_id="lab-other",
+            patient=other_patient,
+            doctor=other_doctor,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.ORDERED,
+        )
+        Prescription.objects.create(
+            prescription_id="rx-other",
+            patient=other_patient,
+            doctor=other_doctor,
+            date_issued=datetime.date.today(),
+            status=Prescription.Status.PENDING,
+        )
+        ConsultationRecord.objects.create(
+            record_id="con-shared",
+            patient=self.patient,
+            doctor=other_doctor,
+            visit_date=datetime.date.today(),
+            diagnosis="Prior clinician record",
+        )
+        Prescription.objects.create(
+            prescription_id="rx-shared",
+            patient=self.patient,
+            doctor=other_doctor,
+            date_issued=datetime.date.today(),
+            status=Prescription.Status.DISPENSED,
+        )
+        LabTest.objects.create(
+            test_id="lab-shared",
+            patient=self.patient,
+            doctor=other_doctor,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.COMPLETED,
+        )
+
+        response = self.client.get("/api/dashboard/doctor/", **self.auth_headers(self.user_doc))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["todayAppointments"], 2)
+        self.assertEqual(response.data["patients"], 1)
+        self.assertEqual(response.data["pendingAppointments"], 1)
+        self.assertEqual(response.data["completedConsultations"], 1)
+        self.assertEqual(response.data["pendingLabs"], 2)
+        self.assertEqual(response.data["activePrescriptions"], 1)
+        self.assertEqual(
+            {lab["id"] for lab in response.data["pendingLabsList"]},
+            {"lab-own", "lab-in-progress"},
+        )
+
+        headers = self.auth_headers(self.user_doc)
+        patients_response = self.client.get("/api/patients/?doctor_scope=mine", **headers)
+        self.assertEqual({row["id"] for row in patients_response.data["results"]}, {"pat-01"})
+        other_patient_response = self.client.get("/api/patients/pat-other/", **headers)
+        self.assertEqual(other_patient_response.status_code, status.HTTP_404_NOT_FOUND)
+
+        appointments_response = self.client.get("/api/appointments/?doctor=staff-doc-02", **headers)
+        self.assertEqual({row["id"] for row in appointments_response.data["results"]}, {"appt-001", "appt-complete"})
+        own_appointments_response = self.client.get("/api/appointments/", **headers)
+        self.assertEqual({row["id"] for row in own_appointments_response.data["results"]}, {"appt-001", "appt-complete"})
+        consultations_response = self.client.get("/api/consultations/?doctor=staff-doc-02", **headers)
+        self.assertEqual(consultations_response.data["results"], [])
+        own_consultations_response = self.client.get("/api/consultations/", **headers)
+        self.assertEqual({row["id"] for row in own_consultations_response.data["results"]}, {"con-own"})
+        prescriptions_response = self.client.get("/api/prescriptions/?doctor=staff-doc-02", **headers)
+        self.assertEqual(prescriptions_response.data["results"], [])
+        own_prescriptions_response = self.client.get("/api/prescriptions/", **headers)
+        self.assertEqual({row["id"] for row in own_prescriptions_response.data["results"]}, {"rx-own"})
+        labs_response = self.client.get("/api/lab-orders/?doctor=staff-doc-02", **headers)
+        self.assertEqual(labs_response.data["results"], [])
+        own_labs_response = self.client.get("/api/lab-orders/", **headers)
+        self.assertEqual({row["id"] for row in own_labs_response.data["results"]}, {"lab-own", "lab-in-progress"})
+        other_history_response = self.client.get("/api/patients/pat-other/clinical-history/", **headers)
+        self.assertEqual(other_history_response.status_code, status.HTTP_404_NOT_FOUND)
+        own_history_response = self.client.get("/api/patients/pat-01/clinical-history/", **headers)
+        self.assertEqual(own_history_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {row["record_id"] for row in own_history_response.data["consultations"]},
+            {"con-own", "con-shared"},
+        )
+        self.assertEqual(
+            {row["prescription_id"] for row in own_history_response.data["prescriptions"]},
+            {"rx-own", "rx-shared"},
+        )
+        self.assertEqual(
+            {row["test_id"] for row in own_history_response.data["labOrders"]},
+            {"lab-own", "lab-in-progress", "lab-shared"},
+        )
+
+        foreign_consult_response = self.client.post(
+            "/api/consultations/get-or-create/",
+            {"appointmentId": "appt-other"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(foreign_consult_response.status_code, status.HTTP_404_NOT_FOUND)
+        foreign_prescription_response = self.client.post(
+            "/api/prescriptions/",
+            {"patientId": "pat-01", "doctorId": "staff-doc-02", "items": [{"medicineId": "med-02", "quantity": 1}]},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(foreign_prescription_response.status_code, status.HTTP_403_FORBIDDEN)
+        foreign_lab_response = self.client.post(
+            "/api/lab-orders/",
+            {"patientId": "pat-01", "doctorId": "staff-doc-02", "testId": "test-01"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(foreign_lab_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        pharmacist_response = self.client.get(
+            "/api/dashboard/doctor/", **self.auth_headers(self.user_pharm)
+        )
+        self.assertEqual(pharmacist_response.status_code, status.HTTP_403_FORBIDDEN)

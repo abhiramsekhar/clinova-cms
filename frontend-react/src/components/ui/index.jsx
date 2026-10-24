@@ -31,7 +31,7 @@ export function Modal({ isOpen, onClose, title, size = 'md', children, footer })
 
   return (
     <div
-      className="modal-overlay"
+      className={`modal-overlay${isOpen ? ' is-open' : ''}`}
       ref={overlayRef}
       onClick={(e) => { if (e.target === overlayRef.current) onClose?.(); }}
       style={{

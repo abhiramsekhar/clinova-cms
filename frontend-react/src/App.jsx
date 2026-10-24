@@ -9,6 +9,7 @@ import AppShell from './components/AppShell';
 // Auth & Shared Pages
 import LoginPage from './pages/login/LoginPage';
 import ForbiddenPage from './pages/shared/ForbiddenPage';
+import PatientProfilePage from './pages/shared/PatientProfilePage';
 
 // Dashboards
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -104,6 +105,12 @@ export function App() {
               {/* Public Routes */}
               <Route path="/login" element={<LoginPage />} />
               <Route path="/403" element={<ForbiddenPage />} />
+
+              <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'DOCTOR', 'RECEPTIONIST']} />}>
+                <Route element={<AppShell />}>
+                  <Route path="/shared/patient-profile" element={<PatientProfilePage />} />
+                </Route>
+              </Route>
 
               {/* Root redirect */}
               <Route path="/" element={<RootRedirect />} />

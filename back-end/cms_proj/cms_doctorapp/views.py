@@ -39,6 +39,16 @@ class StandardPagination(PageNumberPagination):
     max_page_size = 200
 
 
+def _role_id(user):
+    role = getattr(user, "role", None)
+    return getattr(role, "role_id", str(role)) if role else ""
+
+
+def _doctor_for_user(user):
+    staff = getattr(user, "staff", None)
+    return Doctor.objects.filter(staff=staff).first() if staff else None
+
+
 class DoctorViewSet(viewsets.ReadOnlyModelViewSet):
     """List and retrieve active doctors."""
     serializer_class = DoctorSerializer
@@ -70,6 +80,10 @@ class ConsultationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = ConsultationRecord.objects.select_related("patient", "doctor__staff", "appointment").all().order_by("-visit_date", "-created_at")
 
+        if _role_id(self.request.user) == "DOCTOR":
+            doctor = _doctor_for_user(self.request.user)
+            qs = qs.filter(doctor=doctor) if doctor else qs.none()
+
         patient_param = self.request.query_params.get("patient") or self.request.query_params.get("patientId")
         if patient_param:
             qs = qs.filter(patient__patient_id=patient_param)
@@ -96,6 +110,11 @@ class ConsultationViewSet(viewsets.ModelViewSet):
         appointment = Appointment.objects.select_for_update().filter(pk=appt_id).first()
         if not appointment:
             return Response({"detail": f"Appointment '{appt_id}' not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if _role_id(request.user) == "DOCTOR":
+            doctor = _doctor_for_user(request.user)
+            if doctor is None or appointment.doctor_id != doctor.doctor_id:
+                return Response({"detail": "Appointment not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         # Check existing
         existing = ConsultationRecord.objects.filter(appointment=appointment).first()
@@ -238,6 +257,10 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             "patient", "doctor__staff", "consultation", "dispensed_by"
         ).prefetch_related("items__medicine").all().order_by("-date_issued", "-created_at")
 
+        if _role_id(self.request.user) == "DOCTOR":
+            doctor = _doctor_for_user(self.request.user)
+            qs = qs.filter(doctor=doctor) if doctor else qs.none()
+
         patient_param = self.request.query_params.get("patient") or self.request.query_params.get("patientId")
         if patient_param:
             qs = qs.filter(patient__patient_id=patient_param)
@@ -274,12 +297,27 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         if not patient:
             return Response({"detail": "Patient not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        if not doc_ident and hasattr(request.user, "staff"):
+        if _role_id(request.user) == "DOCTOR":
+            own_doctor = _doctor_for_user(request.user)
+            if own_doctor is None:
+                return Response({"detail": "This account is not linked to a doctor profile."}, status=status.HTTP_403_FORBIDDEN)
+            if not doc_ident:
+                doc_ident = own_doctor.staff.staff_id
+        elif not doc_ident and getattr(request.user, "staff", None):
             doc_ident = request.user.staff.staff_id
 
         doctor = resolve_doctor(doc_ident)
         if not doctor:
             return Response({"detail": "Doctor not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if _role_id(request.user) == "DOCTOR":
+            own_doctor = _doctor_for_user(request.user)
+            if own_doctor is None or doctor.pk != own_doctor.pk:
+                return Response({"detail": "You can only prescribe as your own doctor account."}, status=status.HTTP_403_FORBIDDEN)
+            if not Patient.objects.filter(pk=patient.pk).filter(
+                Q(assigned_doctor=own_doctor) | Q(appointments__doctor=own_doctor)
+            ).exists():
+                return Response({"detail": "Patient not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         # Allergy checking
         patient_allergies = []
@@ -536,6 +574,10 @@ class LabOrderViewSet(viewsets.ModelViewSet):
             "patient", "doctor__staff", "test_catalog", "technician"
         ).all().order_by("-ordered_date", "-created_at")
 
+        if _role_id(self.request.user) == "DOCTOR":
+            doctor = _doctor_for_user(self.request.user)
+            qs = qs.filter(doctor=doctor) if doctor else qs.none()
+
         patient_param = self.request.query_params.get("patient") or self.request.query_params.get("patientId")
         if patient_param:
             qs = qs.filter(patient__patient_id=patient_param)
@@ -571,12 +613,27 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         if not patient:
             return Response({"detail": "Patient not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
-        if not doc_ident and hasattr(request.user, "staff"):
+        if _role_id(request.user) == "DOCTOR":
+            own_doctor = _doctor_for_user(request.user)
+            if own_doctor is None:
+                return Response({"detail": "This account is not linked to a doctor profile."}, status=status.HTTP_403_FORBIDDEN)
+            if not doc_ident:
+                doc_ident = own_doctor.staff.staff_id
+        elif not doc_ident and getattr(request.user, "staff", None):
             doc_ident = request.user.staff.staff_id
 
         doctor = resolve_doctor(doc_ident)
         if not doctor:
             return Response({"detail": "Doctor not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+
+        if _role_id(request.user) == "DOCTOR":
+            own_doctor = _doctor_for_user(request.user)
+            if own_doctor is None or doctor.pk != own_doctor.pk:
+                return Response({"detail": "You can only order tests as your own doctor account."}, status=status.HTTP_403_FORBIDDEN)
+            if not Patient.objects.filter(pk=patient.pk).filter(
+                Q(assigned_doctor=own_doctor) | Q(appointments__doctor=own_doctor)
+            ).exists():
+                return Response({"detail": "Patient not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         catalog = LabTestCatalog.objects.filter(pk=catalog_id).first()
         if not catalog:

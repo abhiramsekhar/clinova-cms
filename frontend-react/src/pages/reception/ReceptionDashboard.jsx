@@ -9,6 +9,10 @@ import { DataTable } from '../../components/ui';
 import { Format, formatTime } from '../../utils/format';
 import { useAuth } from '../../auth/AuthContext';
 
+function localDateString(date = new Date()) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 10);
+}
+
 export function ReceptionDashboard() {
   const { user, role } = useAuth();
 
@@ -20,16 +24,16 @@ export function ReceptionDashboard() {
     },
   });
 
-  const { data: appointmentsData, isLoading: apptsLoading } = useQuery({
+  const { data: appointmentsData, isLoading: apptsLoading, error: apptsError, refetch: refetchAppts } = useQuery({
     queryKey: ['receptionAppointmentsToday'],
     queryFn: async () => {
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = localDateString();
       const res = await apiClient.get('/appointments/', { params: { date: todayStr } });
       return res.data?.results || res.data || [];
     },
   });
 
-  const { data: billsData, isLoading: billsLoading } = useQuery({
+  const { data: billsData, isLoading: billsLoading, error: billsError, refetch: refetchBills } = useQuery({
     queryKey: ['receptionRecentBills'],
     queryFn: async () => {
       const res = await apiClient.get('/bills/');
@@ -158,14 +162,18 @@ export function ReceptionDashboard() {
               View All
             </Link>
           </div>
-          <DataTable
-            columns={columns}
-            data={apptsList}
-            emptyTitle="No appointments scheduled for today"
-            emptyIcon="icon-calendar"
-            perPage={10}
-            defaultSort="time"
-          />
+          {apptsError ? (
+            <ErrorState title="Unable to load today's appointments" error={apptsError} onRetry={refetchAppts} />
+          ) : (
+            <DataTable
+              columns={columns}
+              data={apptsList}
+              emptyTitle="No appointments scheduled for today"
+              emptyIcon="icon-calendar"
+              perPage={10}
+              defaultSort="time"
+            />
+          )}
         </div>
 
         {/* Right: Recent Bills */}
@@ -179,7 +187,9 @@ export function ReceptionDashboard() {
             </Link>
           </div>
 
-          {billsList.length === 0 ? (
+          {billsError ? (
+            <ErrorState title="Unable to load recent bills" error={billsError} onRetry={refetchBills} />
+          ) : billsList.length === 0 ? (
             <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '1.5rem 0' }}>
               No recent bills found.
             </p>

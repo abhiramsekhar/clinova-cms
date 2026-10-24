@@ -8,17 +8,17 @@
 | F3 | Shared helpers (Format, validators, print) | DONE | Format helpers (date, datetime, time, money, age, displayName), validators.js |
 | S1 | Login | DONE | Collapsible demo accounts, attempt tracking ("N attempts remaining"), 5-attempt lock, role redirect |
 | S3 | 403 Forbidden | DONE | Access denied page with shield icon, Go Back, and Role Dashboard/Login link |
-| R1 | Reception Dashboard | DONE | KPI stat cards, Today's appointments DataTable, recent bills list with payment badges, quick links |
-| R2 | Reception Patients | DONE | Patient list with search/gender filter, 3-step registration wizard (details, fee payment, confirmation), minor guardian check, duplicate warning |
-| R3 | Reception Appointments | DONE | Appointment list with date/doctor/status filters, 5-step booking wizard (patient, doctor, mode/slot, fee payment, token issue), Check-in, Collect Fee modal, Cancel with reason/refund, No-show confirm |
-| R4 | Reception Billing | DONE | Invoice list with status filter/search, detailed invoice modal with print layout, receive payment modal (≤ balance, cash/card/upi) |
-| D1 | Doctor Dashboard | TODO | |
-| D2 | Doctor Appointments | TODO | |
-| D3 | Doctor Patients | TODO | |
-| D4 | Doctor Consultation | TODO | |
-| D5 | Doctor Prescriptions | TODO | |
-| D6 | Doctor Lab Orders | TODO | |
-| D7 | Doctor Clinical History | TODO | |
+| R1 | Reception Dashboard | IN PROGRESS | Dashboard shortcuts remain route-backed; shared modal visibility fixed; build and diff check pass; live/browser verification pending |
+| R2 | Reception Patients | IN PROGRESS | Server precheck and validation errors; API-backed patient search; shared registration modal visibility fixed; registration payload matches backend contract but live failure cause remains unverified; browser verification pending |
+| R3 | Reception Appointments | IN PROGRESS | Slot/list errors surfaced; appointment bill status/id now match serializer; bill details fetched for bounded partial fee collection; global search opens server-filtered appointment list; no-show enforces documented 15-minute grace; backend test added; live/browser verification pending |
+| R4 | Reception Billing | IN PROGRESS | Invoice search uses backend filter; payment refreshes billing/dashboard queries; shared payment modal visibility fixed; build and diff check pass; live/browser verification pending |
+| D1 | Doctor Dashboard | IN PROGRESS | Added doctor-scoped patients, today's pending/completed counts, pending lab list, retryable API error states and correct schedule actions; backend regression test added; browser verification pending |
+| D2 | Doctor Appointments | IN PROGRESS | Replaced placeholder with authenticated-doctor, date-filtered API schedule and retryable loading/error/empty states; browser verification pending |
+| D3 | Doctor Patients | IN PROGRESS | Replaced placeholder with doctor-scoped searchable API directory and patient-profile navigation; browser verification pending |
+| D4 | Doctor Consultation | IN PROGRESS | Displays an existing authorized consultation record from its appointment/record route; interactive draft, prescription, lab-order, completion and addendum workflow remains outstanding; browser verification pending |
+| D5 | Doctor Prescriptions | IN PROGRESS | Replaced placeholder with doctor-scoped API results and status filtering; creation, detail/print and cancellation actions remain outstanding; browser verification pending |
+| D6 | Doctor Lab Orders | IN PROGRESS | Replaced placeholder with doctor-scoped API orders, status filtering and returned result/critical data; order/cancel actions remain outstanding; browser verification pending |
+| D7 | Doctor Clinical History | IN PROGRESS | Replaced placeholder with scoped patient selection and API-backed consultation/prescription/lab timeline; browser verification pending |
 | P1 | Pharmacy Dashboard | TODO | |
 | P2 | Pharmacy Prescription Queue | TODO | |
 | P3 | Pharmacy Inventory | TODO | |
@@ -41,6 +41,6 @@
 | A7 | Admin Reports | TODO | |
 | A8 | Admin Settings | TODO | |
 | A9 | Admin Audit Log | TODO | |
-| S2 | Patient Profile (shared) | TODO | |
+| S2 | Patient Profile (shared) | TODO | Initial API-backed profile route and overview/history tabs added for Reception navigation; full legacy parity, including standalone lab order, remains outstanding |
 | S4 | DevTools | TODO | |
 | S5 | Styleguide | TODO | |

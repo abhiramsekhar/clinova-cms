@@ -275,25 +275,47 @@ class DashboardViewSet(viewsets.ViewSet):
             "totalRevenuePaise": int(round(float(revenue) * 100)),
         }, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["get"], url_path="doctor")
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="doctor",
+        permission_classes=[IsRole("DOCTOR")],
+    )
     def doctor_dashboard(self, request):
-        from cms_recepapp.models import Appointment
-        from cms_doctorapp.models import LabTest, Prescription
+        from cms_recepapp.models import Appointment, Patient
+        from cms_doctorapp.models import Doctor, LabTest, Prescription
+        from cms_doctorapp.serializers import LabOrderSerializer
 
         today = datetime.date.today()
         staff = getattr(request.user, "staff", None)
-        qs_appts = Appointment.objects.filter(appointment_date=today)
-        qs_labs = LabTest.objects.filter(status__in=["ORDERED", "SAMPLE_COLLECTED", "PROCESSING"])
-        qs_rx = Prescription.objects.filter(status="PENDING")
+        doctor = Doctor.objects.filter(staff=staff).first() if staff else None
+        if doctor is None:
+            return Response(
+                {"detail": "This account is not linked to a doctor profile."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        if staff:
-            qs_appts = qs_appts.filter(doctor__staff=staff)
-            qs_labs = qs_labs.filter(doctor__staff=staff)
-            qs_rx = qs_rx.filter(doctor__staff=staff)
+        qs_appts = Appointment.objects.filter(doctor=doctor, appointment_date=today)
+        qs_labs = LabTest.objects.filter(
+            doctor=doctor,
+        ).exclude(status__in=["COMPLETED", "CANCELLED"]).select_related(
+            "patient", "doctor__staff", "test_catalog"
+        ).order_by(
+            "-ordered_date", "-created_at"
+        )
+        qs_rx = Prescription.objects.filter(doctor=doctor, status="PENDING")
+        qs_patients = Patient.objects.filter(
+            Q(assigned_doctor=doctor) | Q(appointments__doctor=doctor)
+        ).distinct()
+        pending_statuses = ["SCHEDULED", "CHECKED_IN"]
 
         return Response({
             "todayAppointments": qs_appts.count(),
+            "patients": qs_patients.count(),
+            "pendingAppointments": qs_appts.filter(status__in=pending_statuses).count(),
+            "completedConsultations": qs_appts.filter(status="COMPLETED").count(),
             "pendingLabs": qs_labs.count(),
+            "pendingLabsList": LabOrderSerializer(qs_labs[:5], many=True).data,
             "activePrescriptions": qs_rx.count(),
         }, status=status.HTTP_200_OK)
 
