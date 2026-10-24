@@ -21,8 +21,18 @@ export function ToastProvider({ children }) {
     }
   }, [removeToast]);
 
+  const toast = {
+    show: showToast,
+    showToast,
+    removeToast,
+    success: (msg, dur) => showToast(msg, 'success', dur),
+    error: (msg, dur) => showToast(msg, 'error', dur),
+    info: (msg, dur) => showToast(msg, 'info', dur),
+    warning: (msg, dur) => showToast(msg, 'warning', dur),
+  };
+
   return (
-    <ToastContext.Provider value={{ showToast, removeToast }}>
+    <ToastContext.Provider value={toast}>
       {children}
       <div className="toast-container" aria-live="polite">
         {toasts.map((t) => (

@@ -1,5 +1,10 @@
 import React, { useEffect, useRef } from 'react';
-import Icon from './Icon';
+import Icon from '../Icon';
+import DataTable from './DataTable';
+import { ToastProvider, useToast } from './Toast';
+import Badge from '../Badge';
+
+export { DataTable, ToastProvider, useToast, Badge };
 
 /**
  * Reusable modal overlay with focus trap.

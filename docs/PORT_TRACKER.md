@@ -2,10 +2,10 @@
 
 | ID | Page | Status | Notes |
 |----|------|--------|-------|
-| F0 | API client + auth + session timeout | TODO | |
-| F1 | UI components | TODO | |
-| F2 | Layout (sidebar/topbar/search/notifications) | TODO | |
-| F3 | Shared helpers (Format, validators, print) | TODO | |
+| F0 | API client + auth + session timeout | DONE | JWT client, 30m timeout + warning modal, error normalization |
+| F1 | UI components | DONE | Modal, ConfirmDialog, DataTable, Toast, FormField, StatCard, Tabs, Wizard, PrintView, Avatar, Badge |
+| F2 | Layout (sidebar/topbar/search/notifications) | DONE | Sidebar with role menus, Topbar with notifications dropdown and Cmd+K search |
+| F3 | Shared helpers (Format, validators, print) | DONE | Format helpers (date, datetime, time, money, age, displayName), validators.js |
 | S1 | Login | TODO | |
 | S3 | 403 Forbidden | TODO | |
 | R1 | Reception Dashboard | TODO | |
