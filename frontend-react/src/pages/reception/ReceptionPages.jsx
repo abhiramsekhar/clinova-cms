@@ -1,16 +1,7 @@
 import React from 'react';
 import ModulePage from '../shared/ModulePage';
 
-export function ReceptionPatientsPage() {
-  return (
-    <ModulePage
-      title="Patient Registration"
-      subtitle="Register new patients, issue Medical Record Numbers (MRN), and update contact information"
-      icon="icon-users"
-      actionLabel="Register New Patient"
-    />
-  );
-}
+export { ReceptionPatientsPage } from './ReceptionPatientsPage';
 
 export function ReceptionAppointmentsPage() {
   return (
