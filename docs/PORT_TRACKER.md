@@ -8,7 +8,7 @@
 | F3 | Shared helpers (Format, validators, print) | DONE | Format helpers (date, datetime, time, money, age, displayName), validators.js |
 | S1 | Login | DONE | Collapsible demo accounts, attempt tracking ("N attempts remaining"), 5-attempt lock, role redirect |
 | S3 | 403 Forbidden | DONE | Access denied page with shield icon, Go Back, and Role Dashboard/Login link |
-| R1 | Reception Dashboard | TODO | |
+| R1 | Reception Dashboard | DONE | KPI stat cards, Today's appointments DataTable, recent bills list with payment badges, quick links |
 | R2 | Reception Patients | TODO | |
 | R3 | Reception Appointments | TODO | |
 | R4 | Reception Billing | TODO | |
