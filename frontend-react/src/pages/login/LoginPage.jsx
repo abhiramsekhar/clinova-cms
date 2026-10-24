@@ -17,6 +17,7 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showDemoAccounts, setShowDemoAccounts] = useState(true);
 
   const { login, isAuthenticated, role } = useAuth();
   const navigate = useNavigate();
@@ -251,31 +252,52 @@ export function LoginPage() {
             </button>
           </form>
 
-          {/* Demo account quick-fill */}
+          {/* Demo account quick-fill collapsible */}
           <div style={{ marginTop: '1.75rem', paddingTop: '1.25rem', borderTop: '1px dashed var(--border)' }}>
-            <p style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--muted)', marginBottom: '0.5rem' }}>
-              Quick Demo Accounts
-            </p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.username}
-                  type="button"
-                  onClick={() => handleFillDemo(acc)}
-                  className="btn btn--ghost"
-                  style={{
-                    fontSize: '0.75rem',
-                    padding: '0.35rem 0.65rem',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border)',
-                    background: username === acc.username ? 'var(--teal-50, #e6f6f4)' : 'transparent',
-                    borderColor: username === acc.username ? 'var(--teal-500, #00a896)' : 'var(--border)',
-                  }}
-                >
-                  {acc.role}
-                </button>
-              ))}
-            </div>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => setShowDemoAccounts((prev) => !prev)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0.4rem 0',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: 'var(--muted)',
+                marginBottom: showDemoAccounts ? '0.75rem' : '0',
+              }}
+            >
+              <span>Demo Accounts ({DEMO_ACCOUNTS.length})</span>
+              <Icon name={showDemoAccounts ? 'icon-chevron-up' : 'icon-chevron-down'} size={14} />
+            </button>
+
+            {showDemoAccounts && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
+                {DEMO_ACCOUNTS.map((acc) => (
+                  <button
+                    key={acc.username}
+                    type="button"
+                    onClick={() => handleFillDemo(acc)}
+                    className="btn btn--ghost"
+                    style={{
+                      fontSize: '0.75rem',
+                      padding: '0.35rem 0.65rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border)',
+                      background: username === acc.username ? 'var(--teal-50, #e6f6f4)' : 'transparent',
+                      borderColor: username === acc.username ? 'var(--teal-500, #00a896)' : 'var(--border)',
+                    }}
+                  >
+                    {acc.role}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="login-footer" style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.8125rem', color: 'var(--muted)' }}>

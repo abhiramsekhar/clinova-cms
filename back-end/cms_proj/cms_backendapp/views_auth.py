@@ -81,8 +81,23 @@ class LoginView(APIView):
             if update_fields:
                 user.save(update_fields=update_fields)
 
+            if getattr(user, "failed_attempts", 0) >= 5:
+                return Response(
+                    {
+                        "detail": "Account locked for 5 minutes due to too many failed attempts.",
+                        "code": "account_locked",
+                        "attempts_remaining": 0,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            remaining = max(0, 5 - getattr(user, "failed_attempts", 0))
             return Response(
-                {"detail": "Invalid username or password.", "code": "invalid_credentials"},
+                {
+                    "detail": f"Invalid username or password. {remaining} attempt{'s' if remaining != 1 else ''} remaining.",
+                    "code": "invalid_credentials",
+                    "attempts_remaining": remaining,
+                },
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 

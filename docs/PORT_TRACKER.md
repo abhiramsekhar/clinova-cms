@@ -6,8 +6,8 @@
 | F1 | UI components | DONE | Modal, ConfirmDialog, DataTable, Toast, FormField, StatCard, Tabs, Wizard, PrintView, Avatar, Badge |
 | F2 | Layout (sidebar/topbar/search/notifications) | DONE | Sidebar with role menus, Topbar with notifications dropdown and Cmd+K search |
 | F3 | Shared helpers (Format, validators, print) | DONE | Format helpers (date, datetime, time, money, age, displayName), validators.js |
-| S1 | Login | TODO | |
-| S3 | 403 Forbidden | TODO | |
+| S1 | Login | DONE | Collapsible demo accounts, attempt tracking ("N attempts remaining"), 5-attempt lock, role redirect |
+| S3 | 403 Forbidden | DONE | Access denied page with shield icon, Go Back, and Role Dashboard/Login link |
 | R1 | Reception Dashboard | TODO | |
 | R2 | Reception Patients | TODO | |
 | R3 | Reception Appointments | TODO | |
