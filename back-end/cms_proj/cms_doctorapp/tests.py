@@ -15,7 +15,7 @@ from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from cms_backendapp.models import Role, Staff, User, Department, LabTestCatalog, Notification
-from cms_recepapp.models import Patient, Appointment, Bill
+from cms_recepapp.models import Patient, Appointment, Bill, BillItem
 from cms_pharmapp.models import Medicine, StockLedgerEntry
 from cms_labapp.models import LabTestResult
 from cms_doctorapp.models import Doctor, ConsultationRecord, Prescription, PrescriptionItem, LabTest
@@ -233,6 +233,14 @@ class DoctorDomainTests(APITestCase):
         self.assertEqual(res_disp.status_code, status.HTTP_200_OK)
         self.assertEqual(res_disp.data["status"], "DISPENSED")
 
+        pharmacy_bill_item = BillItem.objects.get(
+            source_id=rx_id,
+            item_type=BillItem.ItemType.PHARMACY,
+        )
+        pharmacy_bill = pharmacy_bill_item.bill
+        self.assertEqual(pharmacy_bill.total_amount, pharmacy_bill_item.amount)
+        self.assertEqual(pharmacy_bill.amount_paid, pharmacy_bill.total_amount)
+
         # Verify stock decremented
         self.med_amox.refresh_from_db()
         self.assertEqual(self.med_amox.stock_quantity, 90)
@@ -279,11 +287,67 @@ class DoctorDomainTests(APITestCase):
         res_order = self.client.post("/api/lab-orders/", order_payload, format="json", **headers_doc)
         self.assertEqual(res_order.status_code, status.HTTP_201_CREATED)
         order_id = res_order.data["id"]
+        self.assertEqual(res_order.data["testId"], self.catalog.test_catalog_id)
+
+        bill_item = BillItem.objects.get(source_id=order_id, item_type=BillItem.ItemType.LAB_TEST)
+        bill = bill_item.bill
+        self.assertEqual(bill.patient, self.patient)
+        self.assertEqual(bill.total_amount, self.catalog.price)
+        self.assertEqual(bill_item.amount, self.catalog.price)
+        self.assertEqual(bill.total_amount, sum(item.amount for item in bill.items.all()))
+        bills_response = self.client.get("/api/bills/?patient=pat-01", **headers_lab)
+        self.assertEqual(bills_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(
+            item["sourceId"] == order_id
+            for result in bills_response.data["results"]
+            for item in result["items"]
+        ))
+        payment_response = self.client.post(
+            f"/api/bills/{bill.bill_id}/receive-payment/",
+            {"amount": 40000, "method": "UPI"},
+            format="json",
+            **headers_lab,
+        )
+        self.assertEqual(payment_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(payment_response.data["status"], Bill.PaymentStatus.PAID)
+        self.assertEqual(payment_response.data["totalAmount"], payment_response.data["paidAmount"])
+        self.assertEqual(payment_response.data["balanceDue"], 0)
+
+        lab_notification = Notification.objects.filter(
+            target_role="LAB_TECH",
+            notification_type="LAB_ORDER",
+        ).first()
+        self.assertIsNotNone(lab_notification)
+        self.assertIn(self.patient.name, lab_notification.message)
+        lab_notifications_response = self.client.get("/api/notifications/", **headers_lab)
+        self.assertEqual(lab_notifications_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(
+            notification["id"] == lab_notification.notification_id
+            for notification in lab_notifications_response.data["results"]
+        ))
 
         # 2. Lab Tech updates status to SAMPLE_COLLECTED
         res_stat = self.client.post(f"/api/lab-orders/{order_id}/update-status/", {"status": "SAMPLE_COLLECTED"}, format="json", **headers_lab)
         self.assertEqual(res_stat.status_code, status.HTTP_200_OK)
         self.assertEqual(res_stat.data["status"], "SAMPLE_COLLECTED")
+
+        res_process = self.client.post(f"/api/lab-orders/{order_id}/update-status/", {"status": "PROCESSING"}, format="json", **headers_lab)
+        self.assertEqual(res_process.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_process.data["status"], "PROCESSING")
+
+        # Completion is only allowed when a result is saved.
+        res_skip_result = self.client.post(f"/api/lab-orders/{order_id}/update-status/", {"status": "COMPLETED"}, format="json", **headers_lab)
+        self.assertEqual(res_skip_result.status_code, status.HTTP_400_BAD_REQUEST)
+
+        invalid_result = self.client.post(
+            f"/api/lab-orders/{order_id}/enter-result/",
+            {"results": {"Sodium": "not-a-number", "Potassium": "4.2"}},
+            format="json",
+            **headers_lab,
+        )
+        self.assertEqual(invalid_result.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(invalid_result.data["code"], "VALIDATION_ERROR")
+        self.assertEqual(LabTest.objects.get(test_id=order_id).status, LabTest.Status.PROCESSING)
 
         # 3. Lab Tech enters critical result (Sodium = 125, below criticalLow of 130)
         res_res = self.client.post(
@@ -295,11 +359,110 @@ class DoctorDomainTests(APITestCase):
         self.assertEqual(res_res.status_code, status.HTTP_200_OK)
         self.assertEqual(res_res.data["status"], "COMPLETED")
         self.assertTrue(res_res.data["isCritical"])
+        stored_result = LabTestResult.objects.get(test_id=order_id)
+        self.assertEqual(stored_result.results[0]["parameter"], "Sodium")
+        self.assertEqual(stored_result.results[0]["flag"], "critical_low")
 
         # Verify critical notification to doctor
-        notif = Notification.objects.filter(target_role="DOCTOR", notification_type="LAB_RESULT").first()
+        notif = Notification.objects.filter(
+            target_user=self.user_doc,
+            target_role__isnull=True,
+            notification_type="LAB_RESULT",
+        ).first()
         self.assertIsNotNone(notif)
         self.assertIn("critical", notif.message.lower())
+        doctor_notifications_response = self.client.get("/api/notifications/", **headers_doc)
+        self.assertEqual(doctor_notifications_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(
+            notification["id"] == notif.notification_id
+            for notification in doctor_notifications_response.data["results"]
+        ))
+
+    def test_lab_status_transition_and_result_permissions(self):
+        order = LabTest.objects.create(
+            test_id="lab-trans-01",
+            patient=self.patient,
+            doctor=self.doctor,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.ORDERED,
+        )
+        headers_lab = self.auth_headers(self.user_lab)
+        headers_doc = self.auth_headers(self.user_doc)
+
+        direct_processing = self.client.post(
+            f"/api/lab-orders/{order.test_id}/update-status/",
+            {"status": "PROCESSING"},
+            format="json",
+            **headers_lab,
+        )
+        self.assertEqual(direct_processing.status_code, status.HTTP_400_BAD_REQUEST)
+
+        doctor_update = self.client.post(
+            f"/api/lab-orders/{order.test_id}/update-status/",
+            {"status": "SAMPLE_COLLECTED"},
+            format="json",
+            **headers_doc,
+        )
+        self.assertEqual(doctor_update.status_code, status.HTTP_403_FORBIDDEN)
+
+        result_before_collection = self.client.post(
+            f"/api/lab-orders/{order.test_id}/enter-result/",
+            {"results": {"Sodium": "140", "Potassium": "4.0"}},
+            format="json",
+            **headers_lab,
+        )
+        self.assertEqual(result_before_collection.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_doctor_lab_results_are_scoped_to_their_orders(self):
+        other_staff = Staff.objects.create(
+            staff_id="staff-doc-02",
+            name="Dr. Other",
+            email="other.doc@clinova.test",
+            role=self.role_doc,
+            department=self.dept,
+            is_active=True,
+        )
+        other_doctor = Doctor.objects.create(
+            doctor_id="doc-02",
+            staff=other_staff,
+            department=self.dept,
+            consultation_fee=Decimal("500.00"),
+        )
+        own_order = LabTest.objects.create(
+            test_id="lab-own-01",
+            patient=self.patient,
+            doctor=self.doctor,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.COMPLETED,
+        )
+        other_order = LabTest.objects.create(
+            test_id="lab-other-01",
+            patient=self.patient,
+            doctor=other_doctor,
+            test_catalog=self.catalog,
+            ordered_date=datetime.date.today(),
+            status=LabTest.Status.COMPLETED,
+        )
+        LabTestResult.objects.create(
+            result_id="labr-own-01",
+            test=own_order,
+            performed_by=self.staff_lab,
+            result_date=datetime.date.today(),
+            results={"Sodium": "140", "Potassium": "4.0"},
+        )
+        LabTestResult.objects.create(
+            result_id="labr-other-01",
+            test=other_order,
+            performed_by=self.staff_lab,
+            result_date=datetime.date.today(),
+            results={"Sodium": "140", "Potassium": "4.0"},
+        )
+
+        response = self.client.get("/api/lab-results/", **self.auth_headers(self.user_doc))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["id"] for row in response.data["results"]], ["labr-own-01"])
 
     def test_doctor_permissions(self):
         # Pharmacist attempting to start consultation -> 403 Forbidden

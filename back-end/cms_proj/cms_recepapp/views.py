@@ -10,7 +10,7 @@ ViewSets for Receptionist domain models:
 import datetime
 from decimal import Decimal
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -146,8 +146,8 @@ class PatientViewSet(viewsets.ModelViewSet):
             patient=patient,
             bill_date=datetime.date.today(),
             total_amount=reg_fee_decimal,
-            amount_paid=reg_fee_decimal,
-            payment_status=Bill.PaymentStatus.PAID,
+            amount_paid=Decimal("0.00"),
+            payment_status=Bill.PaymentStatus.UNPAID,
             generated_by=staff,
         )
 
@@ -168,6 +168,7 @@ class PatientViewSet(viewsets.ModelViewSet):
             received_by=staff,
             transaction_ref=payment_data.get("transactionRef"),
         )
+        bill.refresh_from_db()
 
         return Response(
             {
@@ -416,8 +417,8 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             appointment=appointment,
             bill_date=datetime.date.today(),
             total_amount=fee_decimal,
-            amount_paid=fee_decimal,
-            payment_status=Bill.PaymentStatus.PAID,
+            amount_paid=Decimal("0.00"),
+            payment_status=Bill.PaymentStatus.UNPAID,
             generated_by=staff,
         )
 
@@ -438,6 +439,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             received_by=staff,
             transaction_ref=payment_info.get("transactionRef"),
         )
+        bill.refresh_from_db()
 
         return Response(
             {
@@ -589,8 +591,8 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 class BillViewSet(viewsets.ModelViewSet):
     """
     CRUD + payment receipt for Bills.
-    - RECEPTIONIST, ADMIN can view and collect payments.
-    - LAB_TECH, PHARMACIST can view.
+    - ADMIN, RECEPTIONIST, LAB_TECH can view and collect payments.
+    - PHARMACIST can view.
     """
     serializer_class = BillSerializer
     pagination_class = ReceptionPagination
@@ -598,6 +600,8 @@ class BillViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ["list", "retrieve", "payments"]:
             return [IsRole("ADMIN", "RECEPTIONIST", "LAB_TECH", "PHARMACIST")()]
+        if self.action == "receive_payment":
+            return [IsRole("ADMIN", "RECEPTIONIST", "LAB_TECH")()]
         return [IsRole("ADMIN", "RECEPTIONIST")()]
 
     def get_queryset(self):
@@ -632,6 +636,7 @@ class BillViewSet(viewsets.ModelViewSet):
         Payload: { amount: <paise>, method: "CASH"|"CARD"|"UPI", transactionRef?: "..." }
         """
         bill = self.get_object()
+        bill = Bill.objects.select_for_update().get(pk=bill.pk)
 
         if bill.payment_status in [Bill.PaymentStatus.PAID, Bill.PaymentStatus.CANCELLED]:
             return Response(
@@ -639,14 +644,18 @@ class BillViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        amount_paise = request.data.get("amount")
-        if not amount_paise or int(amount_paise) <= 0:
+        raw_amount = request.data.get("amount")
+        try:
+            amount_paise = int(raw_amount)
+        except (TypeError, ValueError):
+            amount_paise = 0
+        if isinstance(raw_amount, bool) or str(amount_paise) != str(raw_amount).strip() or amount_paise <= 0:
             return Response(
                 {"detail": "Payment amount must be greater than zero.", "code": "VALIDATION_ERROR"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        amount_decimal = Decimal(int(amount_paise)) / Decimal("100")
+        amount_decimal = Decimal(amount_paise) / Decimal("100")
         balance = bill.balance_due
         if amount_decimal > balance:
             bal_paise = int(round(float(balance) * 100))
@@ -655,15 +664,47 @@ class BillViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        transaction_ref = request.data.get("transactionRef")
+        lab_payment_prefix = "LAB_TEST_PAYMENT:"
+        if isinstance(transaction_ref, str) and transaction_ref.startswith(lab_payment_prefix):
+            expected_ref = f"{lab_payment_prefix}{bill.bill_id}"
+            lab_items = BillItem.objects.filter(bill=bill, item_type=BillItem.ItemType.LAB_TEST)
+            lab_total = lab_items.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+            if transaction_ref != expected_ref or lab_total <= 0:
+                return Response(
+                    {"detail": "Invalid laboratory payment reference for this bill.", "code": "VALIDATION_ERROR"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            all_items_are_lab_tests = not BillItem.objects.filter(bill=bill).exclude(
+                item_type=BillItem.ItemType.LAB_TEST
+            ).exists()
+            lab_paid = bill.amount_paid if all_items_are_lab_tests else (
+                Payment.objects.filter(bill=bill, transaction_ref=expected_ref).aggregate(
+                    total=Sum("amount_paid")
+                )["total"] or Decimal("0.00")
+            )
+            if amount_decimal > max(Decimal("0.00"), lab_total - lab_paid):
+                return Response(
+                    {"detail": "Payment amount exceeds the remaining laboratory test charges.", "code": "VALIDATION_ERROR"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         staff = getattr(request.user, "staff", None)
-        method = request.data.get("method", "CASH").upper()
+        method_value = request.data.get("method", "CASH")
+        method = method_value.upper() if isinstance(method_value, str) else ""
+        if method not in Payment.Method.values:
+            return Response(
+                {"detail": "Payment method must be CASH, CARD, UPI, or OTHER.", "code": "VALIDATION_ERROR"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         Payment.objects.create(
             bill=bill,
             amount_paid=amount_decimal,
             payment_date=datetime.date.today(),
             payment_method=method,
-            transaction_ref=request.data.get("transactionRef"),
+            transaction_ref=transaction_ref,
             received_by=staff,
         )
 

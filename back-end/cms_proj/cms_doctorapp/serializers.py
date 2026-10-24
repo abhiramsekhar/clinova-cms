@@ -164,7 +164,7 @@ class PrescriptionSerializer(serializers.ModelSerializer):
 
 class LabOrderSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source="test_id", read_only=True)
-    testId = serializers.CharField(source="test_catalog.test_id", read_only=True)
+    testId = serializers.CharField(source="test_catalog.test_catalog_id", read_only=True)
     testName = serializers.CharField(source="test_catalog.test_name", read_only=True)
     testCode = serializers.CharField(source="test_catalog.code", read_only=True)
     patientId = serializers.CharField(source="patient.patient_id", read_only=True)

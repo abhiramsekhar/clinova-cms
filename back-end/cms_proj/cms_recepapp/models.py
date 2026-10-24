@@ -223,14 +223,15 @@ class Payment(models.Model):
         super().save(*args, **kwargs)
 
         if is_new:
-            # Reproduces trg_payments_after_insert from the SQL schema: keep
-            # Bill.amount_paid / payment_status in sync automatically.
             bill = Bill.objects.select_for_update().get(pk=self.bill_id)
-            bill.amount_paid = bill.amount_paid + self.amount_paid
-            if bill.amount_paid >= bill.total_amount:
-                bill.payment_status = Bill.PaymentStatus.PAID
-            elif bill.amount_paid > 0:
-                bill.payment_status = Bill.PaymentStatus.PARTIAL
-            else:
-                bill.payment_status = Bill.PaymentStatus.UNPAID
+            bill.amount_paid = self.__class__.objects.filter(bill_id=self.bill_id).aggregate(
+                total=models.Sum("amount_paid")
+            )["total"] or Decimal("0.00")
+            if bill.payment_status != Bill.PaymentStatus.CANCELLED:
+                if bill.amount_paid >= bill.total_amount:
+                    bill.payment_status = Bill.PaymentStatus.PAID
+                elif bill.amount_paid > 0:
+                    bill.payment_status = Bill.PaymentStatus.PARTIAL
+                else:
+                    bill.payment_status = Bill.PaymentStatus.UNPAID
             bill.save(update_fields=["amount_paid", "payment_status", "updated_at"])

@@ -29,3 +29,8 @@
 - Admin Reports now offers only implemented report types, uses the actual response shape, validates date ranges, and exports safely escaped CSV; unsupported report types no longer fall through to appointment rows.
 - Admin Settings now edits only known stored keys, parses mixed raw/JSON-encoded values, and sends only changed non-empty settings; the backend JSON-encodes string updates so existing settings consumers can read them.
 - Admin Audit Log now serializes actual entity fields and supports validated server-side filters while keeping audit records read-only.
+- Lab Technician queue, completed tests, results, billing, and catalog routes rendered placeholder-only ModulePage states; they now read the existing APIs with search, filters, loading/error/empty states and authorized actions.
+- Lab order status updates previously allowed direct completion/cancellation jumps and Doctor writes; workflow transitions and Lab Tech/Admin action permissions are now enforced, and completion requires result values.
+- Catalog parameters use criticalMin/criticalMax while result handling expected only criticalLow/criticalHigh; both key conventions are now supported and catalog reference/critical flags are stored with results.
+- Doctor result listing previously returned every lab result; reads are now scoped to the authenticated Doctor's own orders.
+- Lab dashboard processing counts and active queue omitted IN_PROGRESS orders; both now include the supported status.

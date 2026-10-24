@@ -27,6 +27,7 @@ class ReceptionGroupTests(APITestCase):
         self.role_rec = Role.objects.create(role_id="RECEPTIONIST", role_name="Receptionist")
         self.role_doc = Role.objects.create(role_id="DOCTOR", role_name="Doctor")
         self.role_pharm = Role.objects.create(role_id="PHARMACIST", role_name="Pharmacist")
+        self.role_lab = Role.objects.create(role_id="LAB_TECH", role_name="Lab Technician")
 
         # 2. Departments
         self.dept = Department.objects.create(
@@ -95,6 +96,23 @@ class ReceptionGroupTests(APITestCase):
         )
         self.user_pharm.set_password("Pass@123")
         self.user_pharm.save()
+
+        self.staff_lab = Staff.objects.create(
+            staff_id="staff-lab-01",
+            name="Arjun Pillai",
+            email="arjun.lab@clinova.test",
+            role=self.role_lab,
+            is_active=True,
+        )
+        self.user_lab = User.objects.create(
+            user_id="user-lab-01",
+            username="labtechnician",
+            role=self.role_lab,
+            staff=self.staff_lab,
+            is_active=True,
+        )
+        self.user_lab.set_password("Pass@123")
+        self.user_lab.save()
 
         # 4. Settings
         Setting.objects.create(setting_id="set-01", key="billing.registrationFee", value="20000")
@@ -286,6 +304,10 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(res.data["bill"]["totalAmount"], 20000)
         self.assertEqual(res.data["bill"]["paidAmount"], 20000)
         self.assertEqual(res.data["bill"]["status"], "PAID")
+        bill = Bill.objects.get(pk=res.data["bill"]["id"])
+        self.assertEqual(bill.payments.count(), 1)
+        self.assertEqual(sum(payment.amount_paid for payment in bill.payments.all()), Decimal("200.00"))
+        self.assertEqual(bill.amount_paid, Decimal("200.00"))
 
     # --- Appointment Tests ---
     def test_appointment_doctor_id_bridge(self):
@@ -349,6 +371,7 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(res.data["appointment"]["doctorId"], "staff-doc-01")
         self.assertEqual(res.data["bill"]["status"], "PAID")
         self.assertEqual(res.data["bill"]["totalAmount"], 50000)
+        self.assertEqual(res.data["bill"]["paidAmount"], 50000)
 
     def test_appointment_check_in_and_cancel(self):
         headers = self.auth_headers(self.user_rec)
@@ -413,6 +436,10 @@ class ReceptionGroupTests(APITestCase):
         # Overpay balance due (balance is 35000 paise, sending 40000)
         res_over = self.client.post(url, {"amount": 40000, "method": "CASH"}, format="json", **headers)
         self.assertEqual(res_over.status_code, status.HTTP_400_BAD_REQUEST)
+        res_invalid_amount = self.client.post(url, {"amount": "not-money", "method": "CASH"}, format="json", **headers)
+        self.assertEqual(res_invalid_amount.status_code, status.HTTP_400_BAD_REQUEST)
+        res_invalid_method = self.client.post(url, {"amount": 1000, "method": "BITCOIN"}, format="json", **headers)
+        self.assertEqual(res_invalid_method.status_code, status.HTTP_400_BAD_REQUEST)
 
         # Pay exact remaining balance: 35000 paise
         res_pay = self.client.post(url, {"amount": 35000, "method": "CASH"}, format="json", **headers)
@@ -420,6 +447,91 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(res_pay.data["paidAmount"], 85000)
         self.assertEqual(res_pay.data["balanceDue"], 0)
         self.assertEqual(res_pay.data["status"], "PAID")
+
+    def test_payment_reconciles_bill_total_from_payment_records(self):
+        bill = Bill.objects.create(
+            bill_id="bill-reconcile-01",
+            patient=self.patient,
+            bill_date=self.today,
+            total_amount=Decimal("500.00"),
+            amount_paid=Decimal("500.00"),
+            payment_status=Bill.PaymentStatus.PAID,
+        )
+
+        Payment.objects.create(
+            payment_id="pay-reconcile-01",
+            bill=bill,
+            amount_paid=Decimal("500.00"),
+            payment_date=self.today,
+            payment_method=Payment.Method.CASH,
+        )
+
+        bill.refresh_from_db()
+        self.assertEqual(bill.amount_paid, Decimal("500.00"))
+        self.assertEqual(bill.payment_status, Bill.PaymentStatus.PAID)
+
+    def test_lab_technician_can_receive_payment(self):
+        url = f"/api/bills/{self.bill.bill_id}/receive-payment/"
+        headers = self.auth_headers(self.user_lab)
+
+        response = self.client.post(
+            url,
+            {"amount": 10000, "method": "CARD"},
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["paidAmount"], 60000)
+        self.assertEqual(response.data["balanceDue"], 25000)
+
+    def test_lab_payment_is_limited_to_lab_charges_on_mixed_bill(self):
+        bill = Bill.objects.create(
+            bill_id="bill-lab-payment-cap",
+            patient=self.patient,
+            bill_date=self.today,
+            total_amount=Decimal("1000.00"),
+            amount_paid=Decimal("0.00"),
+            payment_status=Bill.PaymentStatus.UNPAID,
+        )
+        BillItem.objects.create(
+            bill_item_id="bill-lab-payment-cap-item-1",
+            bill=bill,
+            item_type=BillItem.ItemType.LAB_TEST,
+            source_id="lab-payment-cap",
+            description="CBC Lab Test",
+            amount=Decimal("350.00"),
+        )
+        BillItem.objects.create(
+            bill_item_id="bill-lab-payment-cap-item-2",
+            bill=bill,
+            item_type=BillItem.ItemType.CONSULTATION,
+            source_id="appt-payment-cap",
+            description="Consultation Fee",
+            amount=Decimal("650.00"),
+        )
+        url = f"/api/bills/{bill.bill_id}/receive-payment/"
+        headers = self.auth_headers(self.user_lab)
+        transaction_ref = f"LAB_TEST_PAYMENT:{bill.bill_id}"
+
+        first_payment = self.client.post(
+            url,
+            {"amount": 30000, "method": "CASH", "transactionRef": transaction_ref},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(first_payment.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_payment.data["balanceDue"], 70000)
+
+        overpayment = self.client.post(
+            url,
+            {"amount": 5100, "method": "CASH", "transactionRef": transaction_ref},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(overpayment.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(overpayment.data["detail"], "Payment amount exceeds the remaining laboratory test charges.")
+        self.assertEqual(Payment.objects.filter(bill=bill).count(), 1)
 
     def test_appointment_double_booking_prevention(self):
         headers = self.auth_headers(self.user_rec)

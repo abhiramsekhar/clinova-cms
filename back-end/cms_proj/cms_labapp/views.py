@@ -51,6 +51,10 @@ class LabResultViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = LabTestResult.objects.select_related("test", "test__test_catalog", "performed_by").all().order_by("-result_date", "-created_at")
+        role = getattr(getattr(self.request.user, "role", None), "role_id", "")
+        if role == "DOCTOR":
+            staff = getattr(self.request.user, "staff", None)
+            qs = qs.filter(test__doctor__staff=staff) if staff else qs.none()
         test_id = self.request.query_params.get("test") or self.request.query_params.get("testId")
         if test_id:
             qs = qs.filter(test__test_id=test_id)

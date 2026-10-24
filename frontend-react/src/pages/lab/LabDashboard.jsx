@@ -1,26 +1,32 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import apiClient from '../../api/client';
+import { Link, useSearchParams } from 'react-router-dom';
+import { dashboardApi, labOrdersApi } from '../../api/resources';
 import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
-import { LoadingState, ErrorState } from '../../components/States';
+import { LoadingState, ErrorState, EmptyState } from '../../components/States';
 
 export function LabDashboard() {
-  const { data: stats, isLoading: statsLoading, error: statsError, refetch } = useQuery({
+  const [searchParams] = useSearchParams();
+  const patientSearch = searchParams.get('patientSearch') || '';
+
+  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
     queryKey: ['labDashboard'],
-    queryFn: async () => {
-      const res = await apiClient.get('/dashboard/lab/');
-      return res.data;
-    },
+    queryFn: dashboardApi.lab,
   });
 
-  const { data: ordersData, isLoading: ordersLoading } = useQuery({
+  const {
+    data: ordersData,
+    isLoading: ordersLoading,
+    error: ordersError,
+    refetch: refetchOrders,
+  } = useQuery({
     queryKey: ['labOrdersActive'],
-    queryFn: async () => {
-      const res = await apiClient.get('/lab-orders/?status=ORDERED,SAMPLE_COLLECTED,PROCESSING');
-      return res.data?.results || res.data || [];
-    },
+    queryFn: () => labOrdersApi.list({
+      status: 'ORDERED,SAMPLE_COLLECTED,PROCESSING,IN_PROGRESS',
+      page_size: 200,
+    }),
+    refetchInterval: 15000,
   });
 
   if (statsLoading || ordersLoading) {
@@ -28,7 +34,7 @@ export function LabDashboard() {
   }
 
   if (statsError) {
-    return <ErrorState title="Failed to load laboratory dashboard" error={statsError} onRetry={refetch} />;
+    return <ErrorState title="Failed to load laboratory dashboard" error={statsError} onRetry={refetchStats} />;
   }
 
   const kpis = [
@@ -38,7 +44,18 @@ export function LabDashboard() {
     { label: 'Completed Today', value: stats?.completedToday ?? 0, icon: 'icon-check-circle', color: 'var(--success)' },
   ];
 
-  const ordersList = Array.isArray(ordersData) ? ordersData : [];
+  const ordersList = Array.isArray(ordersData?.results)
+    ? ordersData.results
+    : Array.isArray(ordersData)
+      ? ordersData
+      : [];
+  const normalizedSearch = patientSearch.trim().toLowerCase();
+  const filteredOrders = normalizedSearch
+    ? ordersList.filter((order) => (
+      (order.patientName || order.patient?.name || '').toLowerCase().includes(normalizedSearch)
+      || (order.patientId || order.patient?.id || '').toLowerCase().includes(normalizedSearch)
+    ))
+    : ordersList.slice(0, 8);
 
   return (
     <div>
@@ -78,7 +95,7 @@ export function LabDashboard() {
 
       {/* Active Investigations Queue */}
       <div className="glass card" style={{ padding: '1.5rem', borderRadius: '12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text)', margin: 0 }}>
             Active Diagnostic Orders
           </h3>
@@ -87,13 +104,35 @@ export function LabDashboard() {
           </Link>
         </div>
 
-        {ordersList.length === 0 ? (
-          <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '2rem 0' }}>
-            No active laboratory orders pending analysis.
-          </p>
+        {ordersError ? (
+          <ErrorState
+            title="Failed to load active laboratory orders"
+            error={ordersError}
+            onRetry={refetchOrders}
+          />
+        ) : ordersList.length === 0 ? (
+          <EmptyState
+            title="No active laboratory orders"
+            description="There are no orders awaiting collection or processing."
+            icon="icon-flask"
+          />
+        ) : filteredOrders.length === 0 ? (
+          <EmptyState
+            title="No matching patients"
+            description="Try another patient name or ID."
+            icon="icon-search"
+          />
         ) : (
-          <div className="table-wrapper">
-            <table className="table">
+          <div className="table-wrapper lab-orders-table-wrapper">
+            <table className="table lab-orders-table">
+              <colgroup>
+                <col className="lab-orders-table__order" />
+                <col className="lab-orders-table__test" />
+                <col className="lab-orders-table__patient" />
+                <col className="lab-orders-table__priority" />
+                <col className="lab-orders-table__status" />
+                <col className="lab-orders-table__action" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Order ID</th>
@@ -105,11 +144,18 @@ export function LabDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {ordersList.slice(0, 8).map((order) => (
+                {filteredOrders.map((order) => (
                   <tr key={order.id}>
-                    <td><code>{order.id}</code></td>
-                    <td style={{ fontWeight: 600 }}>{order.testName || order.test?.name || 'Diagnostic Test'}</td>
-                    <td>{order.patientName || order.patient?.name || 'Patient'}</td>
+                    <td className="lab-orders-table__id"><code>{order.id}</code></td>
+                    <td className="lab-orders-table__test-name">{order.testName || order.test?.name || 'Diagnostic Test'}</td>
+                    <td className="lab-orders-table__patient-name">
+                      <span>{order.patientName || order.patient?.name || 'Patient'}</span>
+                      {(order.patientId || order.patient?.id) && (
+                        <code className="lab-orders-table__patient-id">
+                          {order.patientId || order.patient.id}
+                        </code>
+                      )}
+                    </td>
                     <td>
                       <Badge variant={order.priority === 'STAT' ? 'danger' : order.priority === 'URGENT' ? 'warning' : 'neutral'}>
                         {order.priority || 'Normal'}
@@ -119,8 +165,11 @@ export function LabDashboard() {
                       <Badge status={order.status} />
                     </td>
                     <td>
-                      <Link to={`/lab/results?orderId=${order.id}`} className="btn btn--secondary btn--sm">
-                        Enter Result
+                      <Link
+                        to={`/lab/test-queue?search=${encodeURIComponent(order.patientName || order.patient?.name || '')}&patientId=${encodeURIComponent(order.patientId || order.patient?.id || '')}&selectedOrder=${encodeURIComponent(order.id)}`}
+                        className="btn btn--primary btn--sm"
+                      >
+                        Go
                       </Link>
                     </td>
                   </tr>

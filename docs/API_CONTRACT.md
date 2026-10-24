@@ -178,12 +178,18 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/lab-orders/` | DOCTOR, LAB_TECH | Filter: `?doctor=&patient=&status=`. Doctor-role requests are always self-scoped; fields include `orderedDate`, `testName`, `patientName`, `status`, `results`, and `isCritical`. LAB_TECH sees all matching records. |
-| GET | `/lab-orders/{id}/` | DOCTOR, LAB_TECH | Detail with test info, patient info, results; Doctor access is restricted to own orders. |
-| POST | `/lab-orders/` | DOCTOR | Order a test. Body: `{ patientId, doctorId, testId, priority?, notes? }`. Creates UNPAID bill. |
-| POST | `/lab-orders/{id}/update-status/` | LAB_TECH | Body: `{ status, technicianId }`. For SAMPLE_COLLECTED, PROCESSING. |
-| POST | `/lab-orders/{id}/enter-result/` | LAB_TECH | Body: `{ results: { paramName: value, ... }, technicianId }`. Auto-flags critical. Notifies doctor. |
+| GET | `/lab-orders/` | ADMIN, DOCTOR, LAB_TECH | Paginated; filters: `?doctor=&patient=&status=`. Doctor requests are self-scoped; Lab Tech/Admin can view matching orders. Includes patient, catalog, status, collection/completion timestamps, technician and saved result fields. |
+| GET | `/lab-orders/{id}/` | ADMIN, DOCTOR, LAB_TECH | Detail with patient, catalog and result fields; Doctor access is restricted to own orders. |
+| POST | `/lab-orders/` | ADMIN, DOCTOR | Body: `{ patientId, doctorId, testId, priority?, notes? }`. Creates an ORDERED order and associated UNPAID bill item. |
+| POST | `/lab-orders/{id}/update-status/` | ADMIN, LAB_TECH | Body: `{ status, technicianId? }`. Allowed transitions: ORDERED → SAMPLE_COLLECTED → PROCESSING → IN_PROGRESS. Completing requires saving a result; same-status retries are idempotent. The assigned technician must be active and have the LAB_TECH role. |
+| POST | `/lab-orders/{id}/enter-result/` | ADMIN, LAB_TECH | Body: `{ results: { parameter: value }, remarks? }` (array values are also accepted). Requires defined required parameters and a collected/processing order. Saves one result per order, flags values from catalog reference/critical ranges, marks COMPLETED and notifies the ordering doctor for critical results. |
 | POST | `/lab-orders/{id}/cancel/` | DOCTOR | Only ORDERED. Cancels associated bill. |
+
+## Lab Results
+
+| Method | Endpoint | Roles | Notes |
+|--------|----------|-------|-------|
+| GET | `/lab-results/` | ADMIN, DOCTOR, LAB_TECH | Paginated saved results; optional `?test={orderId}`. Doctor results are scoped to their own orders. Values include parameter, value, unit and catalog-derived flag when available. This endpoint does not expose a separate verification state or downloadable report. |
 
 ---
 
@@ -191,10 +197,10 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/bills/` | RECEPTIONIST, ADMIN | Filter: `?patient=&status=` |
-| GET | `/bills/{id}/` | RECEPTIONIST, ADMIN | Detail with items and payments |
-| POST | `/bills/{id}/receive-payment/` | RECEPTIONIST | Body: `{ amount, method, receivedBy }`. Updates status to PARTIAL or PAID. |
-| GET | `/bills/{id}/payments/` | RECEPTIONIST | Payment history for a bill |
+| GET | `/bills/` | RECEPTIONIST, ADMIN, LAB_TECH, PHARMACIST | Paginated; filters: `?patient=&status=&search=`. No `source=lab` filter exists; Lab UI filters returned `items` for `itemType=LAB_TEST`. Values include totalAmount, paidAmount and balanceDue in integer paise. |
+| GET | `/bills/{id}/` | RECEPTIONIST, ADMIN, LAB_TECH, PHARMACIST | Detail with items and payments |
+| POST | `/bills/{id}/receive-payment/` | RECEPTIONIST, ADMIN | Body: `{ amount, method, transactionRef? }`. Payment changes are restricted to billing roles. |
+| GET | `/bills/{id}/payments/` | RECEPTIONIST, ADMIN, LAB_TECH, PHARMACIST | Payment history for a bill |
 
 ---
 
@@ -216,7 +222,7 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 | GET | `/dashboard/doctor/` | DOCTOR | Own `todayAppointments`, `patients` (assigned or seen by this doctor), `pendingAppointments` (today's SCHEDULED/CHECKED_IN), `completedConsultations` (today's COMPLETED appointments), `pendingLabs` and newest-first `pendingLabsList` (all statuses except COMPLETED/CANCELLED, capped at 5), and `activePrescriptions` (PENDING). Requires the authenticated account to have a linked Doctor profile. |
 | GET | `/dashboard/reception/` | RECEPTIONIST | Today stats: checked-in, scheduled, completed, unpaid bills |
 | GET | `/dashboard/pharmacy/` | PHARMACIST | Pending Rx count, low stock, expiring, today's dispensed |
-| GET | `/dashboard/lab/` | LAB_TECH | Queue: pending, in-progress, completed today, critical |
+| GET | `/dashboard/lab/` | LAB_TECH, ADMIN | `{ pending, sampleCollected, processing, completedToday }`; processing includes PROCESSING and IN_PROGRESS. |
 | GET | `/reports/generate/` | ADMIN | `?type=appointments|revenue|medicines&start=YYYY-MM-DD&end=YYYY-MM-DD`; returns `{ type, count, data }`, capped at 100 rows. Dates are validated; start must not follow end. Appointment and revenue data are date-filtered. Medicines is a current stock snapshot and ignores dates. Unsupported types return 400. |
 
 ---
@@ -262,11 +268,11 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 | **Pharmacy / Stock Alerts** | `GET /medicines/stock-alerts/` |
 | **Pharmacy / Dispensing History** | `GET /prescriptions/?status=DISPENSED` |
 | **Lab / Dashboard** | `GET /dashboard/lab/` |
-| **Lab / Test Queue** | `GET /lab-orders/?status=ORDERED,SAMPLE_COLLECTED,PROCESSING`, update-status |
-| **Lab / Results** | `POST /lab-orders/{id}/enter-result/` |
-| **Lab / Completed Tests** | `GET /lab-orders/?status=COMPLETED` |
+| **Lab / Test Queue** | `GET /lab-orders/`, `POST /lab-orders/{id}/update-status/`, `POST /lab-orders/{id}/enter-result/` |
+| **Lab / Results** | `GET /lab-orders/`, `GET /lab-results/`, `POST /lab-orders/{id}/enter-result/` |
+| **Lab / Completed Tests** | `GET /lab-orders/`, `GET /lab-results/` |
 | **Lab / Catalog** | `GET /lab-catalog/` |
-| **Lab / Billing** | `GET /bills/?source=lab` |
+| **Lab / Billing** | `GET /bills/` (filter client-side to `LAB_TEST` items); payment write endpoints are not available to LAB_TECH |
 | **Admin / Dashboard** | `GET /dashboard/admin/` |
 | **Admin / Staff** | `GET /staff/`, `POST /staff/`, deactivate |
 | **Admin / Users** | `GET /users/`, reset-password, unlock |

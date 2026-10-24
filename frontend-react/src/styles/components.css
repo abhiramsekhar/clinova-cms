@@ -1479,3 +1479,161 @@
     font-size: 0.875rem;
     color: var(--muted);
 }
+
+/* ── Lab technician pages ── */
+.lab-module-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+}
+
+.lab-module-page .page-header {
+    align-items: center;
+    margin-bottom: 0;
+    padding: var(--sp-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+}
+
+.lab-page-header__icon {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: var(--radius-md);
+    background: var(--teal-50);
+    color: var(--teal-700);
+}
+
+.lab-module-page .text-caption {
+    max-width: 60ch;
+}
+
+.lab-filter-panel {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    margin-bottom: 0 !important;
+}
+
+.lab-filter-panel__search {
+    position: relative;
+    display: block;
+    flex: 0 1 380px;
+    width: 100%;
+    min-width: min(100%, 240px);
+}
+
+.lab-filter-panel__search > .icon {
+    position: absolute;
+    left: var(--sp-3);
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    pointer-events: none;
+}
+
+.lab-filter-panel__search .form-input {
+    padding-left: 2.5rem;
+}
+
+.lab-filter-panel__field {
+    display: flex;
+    flex: 0 1 210px;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 160px;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.lab-filter-panel__field .form-input {
+    color: var(--text);
+    font-weight: 400;
+}
+
+.lab-module-page > section.glass.card {
+    margin-bottom: 0 !important;
+    padding: var(--sp-5) !important;
+}
+
+.lab-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    scrollbar-gutter: stable;
+}
+
+.lab-record-table {
+    color: var(--text);
+    font-size: 0.875rem;
+    line-height: 1.45;
+}
+
+.lab-record-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 0.85rem 1rem;
+    background: var(--bg);
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.035em;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.lab-record-table td {
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+.lab-record-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.lab-record-table tbody tr:hover td {
+    background: var(--hover-bg);
+}
+
+.lab-record-table tbody tr[aria-selected="true"] td {
+    background: rgba(2, 168, 150, 0.14);
+}
+
+.lab-record-table td small {
+    display: inline-block;
+    margin-top: 0.2rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+}
+
+.lab-record-table td code {
+    white-space: nowrap;
+    color: var(--navy-800);
+    font-size: 0.8rem;
+}
+
+.lab-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    padding-top: var(--sp-4);
+}
+
+.lab-pagination > span,
+.lab-pagination > div > span {
+    color: var(--muted);
+    font-size: 0.8125rem;
+}

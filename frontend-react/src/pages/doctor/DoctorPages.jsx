@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { appointmentsApi, consultationsApi, labOrdersApi, patientsApi, prescriptionsApi } from '../../api/resources';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { appointmentsApi, consultationsApi, labCatalogApi, labOrdersApi, patientsApi, prescriptionsApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
 import Badge from '../../components/Badge';
 import Icon from '../../components/Icon';
 import { EmptyState, ErrorState, LoadingState } from '../../components/States';
-import { DataTable } from '../../components/ui';
+import { DataTable, Modal, useToast } from '../../components/ui';
 import { Format, formatDate, formatDateTime, formatTime } from '../../utils/format';
 import './doctor-pages.css';
 
@@ -209,11 +209,49 @@ export function DoctorPrescriptionsPage() {
 
 export function DoctorLabOrdersPage() {
   const doctorKey = useDoctorKey();
+  const queryClient = useQueryClient();
+  const toast = useToast();
   const [status, setStatus] = useState('');
+  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
+  const [orderForm, setOrderForm] = useState({ patientId: '', testId: '', priority: 'Routine', notes: '' });
   const query = useQuery({
     queryKey: ['doctorLabOrders', doctorKey, status],
     queryFn: () => labOrdersApi.list({ doctor: 'me', status: status || undefined, page_size: PAGE_SIZE }),
   });
+  const patientsQuery = useQuery({
+    queryKey: ['doctorLabOrderPatients', doctorKey],
+    queryFn: () => patientsApi.list({ doctor_scope: 'mine', page_size: PAGE_SIZE }),
+  });
+  const catalogQuery = useQuery({
+    queryKey: ['doctorLabCatalog'],
+    queryFn: () => labCatalogApi.list({ page_size: PAGE_SIZE }),
+  });
+  const createOrderMutation = useMutation({
+    mutationFn: (data) => labOrdersApi.create(data),
+    onSuccess: (order) => {
+      toast.success(`Lab order sent to the laboratory. Bill generated for ${order.testName}.`);
+      setIsOrderModalOpen(false);
+      setOrderForm({ patientId: '', testId: '', priority: 'Routine', notes: '' });
+      queryClient.invalidateQueries({ queryKey: ['doctorLabOrders'] });
+      queryClient.invalidateQueries({ queryKey: ['labOrders'] });
+      queryClient.invalidateQueries({ queryKey: ['labDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['labBills'] });
+      queryClient.invalidateQueries({ queryKey: ['doctorDashboard'] });
+    },
+    onError: (error) => toast.error(error?.response?.data?.detail || 'Unable to create the laboratory order.'),
+  });
+  const patients = rowsFrom(patientsQuery.data);
+  const catalog = rowsFrom(catalogQuery.data).filter((test) => test.isActive !== false);
+  const selectedTest = catalog.find((test) => test.id === orderForm.testId);
+  const submitLabOrder = (event) => {
+    event.preventDefault();
+    createOrderMutation.mutate({
+      patientId: orderForm.patientId,
+      testId: orderForm.testId,
+      priority: orderForm.priority,
+      notes: orderForm.notes.trim(),
+    });
+  };
   const columns = [
     { key: 'orderedDate', label: 'Date', sortable: true, render: (row) => formatDate(row.orderedDate) },
     { key: 'patientName', label: 'Patient', sortable: true, render: (row) => <PatientLink patientId={row.patientId}>{row.patientName || 'Patient'}</PatientLink> },
@@ -225,7 +263,12 @@ export function DoctorLabOrdersPage() {
 
   return (
     <div className="doctor-workspace">
-      <PageHeader title="Diagnostic Lab Orders" subtitle="Your orders, processing state and reported results" icon="icon-flask" />
+      <PageHeader title="Diagnostic Lab Orders" subtitle="Your orders, processing state and reported results" icon="icon-flask">
+        <button type="button" className="btn btn--primary" onClick={() => setIsOrderModalOpen(true)}>
+          <Icon name="icon-flask" size={16} />
+          <span>Order lab test</span>
+        </button>
+      </PageHeader>
       <section className="glass card doctor-panel" style={{ padding: '1rem' }}>
         <label htmlFor="doctor-lab-status" className="form-group__label">Filter by status</label>
         <select id="doctor-lab-status" className="form-control" value={status} onChange={(event) => setStatus(event.target.value)}>
@@ -235,6 +278,49 @@ export function DoctorLabOrdersPage() {
           ? <ErrorState title="Unable to load lab orders" error={query.error} onRetry={query.refetch} />
           : <DataTable columns={columns} data={rowsFrom(query.data)} showSearch searchPlaceholder="Search lab orders..." emptyTitle="No lab orders found" />}
       </section>
+      {isOrderModalOpen && <Modal isOpen onClose={() => { if (!createOrderMutation.isPending) setIsOrderModalOpen(false); }} title="Order a laboratory test">
+        {patientsQuery.error
+          ? <ErrorState title="Unable to load your patients" error={patientsQuery.error} onRetry={patientsQuery.refetch} />
+          : catalogQuery.error
+            ? <ErrorState title="Unable to load the test catalog" error={catalogQuery.error} onRetry={catalogQuery.refetch} />
+            : patientsQuery.isLoading || catalogQuery.isLoading
+              ? <LoadingState message="Loading patients and laboratory tests..." />
+              : <form onSubmit={submitLabOrder}>
+                <div className="form-group">
+                  <label className="form-group__label" htmlFor="lab-order-patient">Patient</label>
+                  <select id="lab-order-patient" className="form-control" value={orderForm.patientId} onChange={(event) => setOrderForm((current) => ({ ...current, patientId: event.target.value }))} required>
+                    <option value="">Choose a patient</option>
+                    {patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.name}{patient.mrn ? ` (${patient.mrn})` : ''}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-group__label" htmlFor="lab-order-test">Laboratory test</label>
+                  <select id="lab-order-test" className="form-control" value={orderForm.testId} onChange={(event) => setOrderForm((current) => ({ ...current, testId: event.target.value }))} required>
+                    <option value="">Choose a test</option>
+                    {catalog.map((test) => <option key={test.id} value={test.id}>{test.name || test.testName} · {Format.money(test.price)}</option>)}
+                  </select>
+                  {selectedTest && <small>Test price: {Format.money(selectedTest.price)}</small>}
+                </div>
+                <div className="form-group">
+                  <label className="form-group__label" htmlFor="lab-order-priority">Priority</label>
+                  <select id="lab-order-priority" className="form-control" value={orderForm.priority} onChange={(event) => setOrderForm((current) => ({ ...current, priority: event.target.value }))}>
+                    <option value="Routine">Routine</option><option value="Urgent">Urgent</option><option value="STAT">STAT</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-group__label" htmlFor="lab-order-notes">Clinical notes (optional)</label>
+                  <textarea id="lab-order-notes" className="form-control" rows={3} value={orderForm.notes} onChange={(event) => setOrderForm((current) => ({ ...current, notes: event.target.value }))} />
+                </div>
+                {patients.length === 0 && <p>No patients are currently assigned to or seen by your account.</p>}
+                {catalog.length === 0 && <p>No active laboratory tests are available in the catalog.</p>}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                  <button type="button" className="btn btn--secondary" onClick={() => setIsOrderModalOpen(false)} disabled={createOrderMutation.isPending}>Cancel</button>
+                  <button type="submit" className="btn btn--primary" disabled={createOrderMutation.isPending || patients.length === 0 || catalog.length === 0}>
+                    {createOrderMutation.isPending ? 'Sending order…' : 'Send order'}
+                  </button>
+                </div>
+              </form>}
+      </Modal>}
     </div>
   );
 }

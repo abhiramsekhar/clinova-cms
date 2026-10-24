@@ -10,6 +10,7 @@ from decimal import Decimal
 from django.contrib.auth.hashers import make_password
 from django.core.management.base import BaseCommand
 from django.db import connection, transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from cms_backendapp.models import (
@@ -734,8 +735,8 @@ class Command(BaseCommand):
                     "patient": patient,
                     "bill_date": d(day),
                     "total_amount": to_dec(total),
-                    "amount_paid": to_dec(paid),
-                    "payment_status": stat,
+                    "amount_paid": Decimal("0.00"),
+                    "payment_status": "UNPAID",
                     "generated_by": creator,
                 },
             )
@@ -777,6 +778,22 @@ class Command(BaseCommand):
                     "transaction_ref": f"TXN-{payid.upper()}",
                     "received_by": receiver,
                 },
+            )
+
+        for bid, _, _, _, _, stat, _, _ in bills_specs:
+            bill = Bill.objects.get(pk=bid)
+            paid_amount = bill.payments.aggregate(total=Sum("amount_paid"))["total"] or Decimal("0.00")
+            if stat == "CANCELLED":
+                payment_status = Bill.PaymentStatus.CANCELLED
+            elif paid_amount >= bill.total_amount:
+                payment_status = Bill.PaymentStatus.PAID
+            elif paid_amount > 0:
+                payment_status = Bill.PaymentStatus.PARTIAL
+            else:
+                payment_status = Bill.PaymentStatus.UNPAID
+            Bill.objects.filter(pk=bid).update(
+                amount_paid=paid_amount,
+                payment_status=payment_status,
             )
 
         # 18. NOTIFICATIONS (8)

@@ -8,6 +8,7 @@ ViewSets for Doctor domain:
 """
 
 import datetime
+import math
 from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
@@ -505,8 +506,8 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
                 patient=prescription.patient,
                 bill_date=datetime.date.today(),
                 total_amount=total_cost,
-                amount_paid=total_cost if is_paid else Decimal("0.00"),
-                payment_status=Bill.PaymentStatus.PAID if is_paid else Bill.PaymentStatus.UNPAID,
+                amount_paid=Decimal("0.00"),
+                payment_status=Bill.PaymentStatus.UNPAID,
                 generated_by=staff,
             )
 
@@ -567,6 +568,8 @@ class LabOrderViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ["create", "cancel"]:
             return [IsRole("ADMIN", "DOCTOR")()]
+        if self.action in ["update_status", "enter_result"]:
+            return [IsRole("ADMIN", "LAB_TECH")()]
         return [IsRole("ADMIN", "DOCTOR", "LAB_TECH")()]
 
     def get_queryset(self):
@@ -661,6 +664,28 @@ class LabOrderViewSet(viewsets.ModelViewSet):
             notes=data.get("notes"),
         )
 
+        bill = Bill.objects.create(
+            patient=patient,
+            bill_date=datetime.date.today(),
+            total_amount=catalog.price,
+            generated_by=getattr(request.user, "staff", None) or doctor.staff,
+        )
+        BillItem.objects.create(
+            bill=bill,
+            item_type=BillItem.ItemType.LAB_TEST,
+            source_id=order.test_id,
+            description=f"Lab Test — {catalog.test_name}",
+            amount=catalog.price,
+        )
+
+        Notification.objects.create(
+            notification_type="LAB_ORDER",
+            title="New Laboratory Order",
+            message=f"{doctor.staff.name} ordered {catalog.test_name} for {patient.name} ({patient.mrn}).",
+            target_role="LAB_TECH",
+            link="/lab/test-queue",
+        )
+
         return Response(self.get_serializer(order).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="cancel")
@@ -679,25 +704,36 @@ class LabOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="update-status")
     def update_status(self, request, pk=None):
-        """Updates lab test status (e.g. SAMPLE_COLLECTED, PROCESSING)."""
+        """Advance a lab order through the collection and processing workflow."""
         order = self.get_object()
         new_status = request.data.get("status")
         tech_id = request.data.get("technicianId")
+        transitions = {
+            LabTest.Status.ORDERED: {LabTest.Status.SAMPLE_COLLECTED},
+            LabTest.Status.SAMPLE_COLLECTED: {LabTest.Status.PROCESSING},
+            LabTest.Status.PROCESSING: {LabTest.Status.IN_PROGRESS},
+            LabTest.Status.IN_PROGRESS: set(),
+        }
+        if new_status == order.status:
+            return Response(self.get_serializer(order).data, status=status.HTTP_200_OK)
+        if new_status not in transitions.get(order.status, set()):
+            return Response(
+                {"detail": f"Cannot move a {order.status} order to {new_status or 'an empty status'}. Enter a result to complete an order.", "code": "INVALID_STATE"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        if new_status not in ["SAMPLE_COLLECTED", "PROCESSING", "IN_PROGRESS", "COMPLETED", "CANCELLED"]:
-            return Response({"detail": f"Invalid status '{new_status}'", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
-
-        order.status = new_status
         if new_status == "SAMPLE_COLLECTED" and not order.sample_collected_at:
             order.sample_collected_at = timezone.now()
 
         if tech_id:
             tech = Staff.objects.filter(Q(staff_id=tech_id) | Q(pk=tech_id)).first()
-            if tech:
-                order.technician = tech
-        elif hasattr(request.user, "staff"):
+            if not tech or not tech.is_active or getattr(getattr(tech, "role", None), "role_id", None) != "LAB_TECH":
+                return Response({"detail": "Technician must be an active Lab Technician.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            order.technician = tech
+        elif _role_id(request.user) == "LAB_TECH" and hasattr(request.user, "staff"):
             order.technician = request.user.staff
 
+        order.status = new_status
         order.save()
         return Response(self.get_serializer(order).data, status=status.HTTP_200_OK)
 
@@ -708,32 +744,94 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         Enters test results, checks critical ranges, marks COMPLETED, notifies doctor.
         """
         order = self.get_object()
-        results_data = request.data.get("results", {})
+        results_data = request.data.get("results")
         tech_id = request.data.get("technicianId")
         remarks = request.data.get("remarks")
         is_critical = bool(request.data.get("isCritical", False))
 
+        if order.status not in [LabTest.Status.PROCESSING, LabTest.Status.IN_PROGRESS, LabTest.Status.COMPLETED]:
+            return Response(
+                {"detail": "Collect and process the specimen before entering results.", "code": "INVALID_STATE"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not isinstance(results_data, (dict, list)) or not results_data:
+            return Response({"detail": "At least one test result is required.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+
+        def result_for(parameter_name):
+            if isinstance(results_data, dict):
+                return results_data.get(parameter_name)
+            for item in results_data:
+                if isinstance(item, dict) and item.get("parameter") == parameter_name:
+                    return item.get("value")
+            return None
+
+        params = order.test_catalog.parameters or []
+        for parameter in params:
+            name = parameter.get("name")
+            raw_value = result_for(name) if name else None
+            if name and parameter.get("required") is not False and (raw_value is None or not str(raw_value).strip()):
+                return Response(
+                    {"detail": f"A result is required for {name}.", "code": "VALIDATION_ERROR"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            data_type = str(parameter.get("dataType") or parameter.get("type") or "").lower()
+            has_numeric_range = any(
+                parameter.get(key) is not None
+                for key in ("refMin", "refMax", "min", "max", "criticalMin", "criticalMax", "criticalLow", "criticalHigh")
+            )
+            is_numeric = data_type in {"number", "numeric", "integer", "decimal"} or (
+                data_type not in {"text", "string", "qualitative", "boolean", "choice"}
+                and bool(parameter.get("unit") or has_numeric_range)
+            )
+            if raw_value is not None and str(raw_value).strip() and is_numeric:
+                try:
+                    numeric_value = float(raw_value)
+                    if not math.isfinite(numeric_value) or (data_type == "integer" and not numeric_value.is_integer()):
+                        raise ValueError
+                except (ValueError, TypeError):
+                    return Response(
+                        {"detail": f"{name} must be a valid {data_type} value.", "code": "VALIDATION_ERROR"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
         tech = None
         if tech_id:
             tech = Staff.objects.filter(Q(staff_id=tech_id) | Q(pk=tech_id)).first()
+            if not tech or not tech.is_active or getattr(getattr(tech, "role", None), "role_id", None) != "LAB_TECH":
+                return Response({"detail": "Technician must be an active Lab Technician.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
         if not tech and hasattr(request.user, "staff"):
             tech = request.user.staff
 
-        # Check parameter ranges
-        params = order.test_catalog.parameters or []
+        # Use only ranges defined by the catalog to flag numeric values. These
+        # flags describe the supplied reference range and are not a diagnosis.
+        stored_results = [] if params else results_data
         for p in params:
             pname = p.get("name")
-            if pname in results_data:
+            raw_value = result_for(pname) if pname else None
+            if raw_value is not None:
+                flag = None
                 try:
-                    val = float(results_data[pname])
-                    c_low = p.get("criticalLow")
-                    c_high = p.get("criticalHigh")
+                    val = float(raw_value)
+                    c_low = p.get("criticalMin", p.get("criticalLow"))
+                    c_high = p.get("criticalMax", p.get("criticalHigh"))
+                    ref_low = p.get("refMin")
+                    ref_high = p.get("refMax")
                     if c_low is not None and val <= float(c_low):
                         is_critical = True
+                        flag = "critical_low"
                     if c_high is not None and val >= float(c_high):
                         is_critical = True
+                        flag = "critical_high"
+                    if flag is None and (ref_low is not None or ref_high is not None):
+                        flag = "low" if ref_low is not None and val < float(ref_low) else "high" if ref_high is not None and val > float(ref_high) else "normal"
                 except (ValueError, TypeError):
                     pass
+                stored_results.append({
+                    "parameter": pname,
+                    "value": raw_value,
+                    "unit": p.get("unit") or "",
+                    **({"flag": flag} if flag else {}),
+                })
 
         from cms_labapp.models import LabTestResult
         existing_labr = LabTestResult.objects.filter(result_id__startswith="labr-").values_list("result_id", flat=True)
@@ -753,7 +851,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
                 "result_id": res_id,
                 "performed_by": tech or order.doctor.staff,
                 "result_date": datetime.date.today(),
-                "results": results_data,
+                "results": stored_results,
                 "is_critical": is_critical,
                 "remarks": remarks or ("Critical values detected" if is_critical else "Results validated"),
             }
@@ -772,9 +870,8 @@ class LabOrderViewSet(viewsets.ModelViewSet):
                     notification_type="LAB_RESULT",
                     title="Critical Lab Result",
                     message=f"Patient {order.patient.name} ({order.patient.mrn}) has critical {order.test_catalog.test_name} result.",
-                    target_role="DOCTOR",
                     target_user=doc_user,
-                    link="pages/doctor/lab-orders.html",
+                    link="/doctor/lab-orders",
                 )
 
         return Response(self.get_serializer(order).data, status=status.HTTP_200_OK)

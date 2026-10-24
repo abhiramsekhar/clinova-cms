@@ -114,7 +114,6 @@ export const MENUS = {
       items: [
         { label: 'Test Queue', icon: 'icon-clipboard-list', href: '/lab/test-queue', id: 'nav-test-queue' },
         { label: 'Completed Tests', icon: 'icon-check-circle', href: '/lab/completed-tests', id: 'nav-completed' },
-        { label: 'Results', icon: 'icon-file-text', href: '/lab/results', id: 'nav-results' },
       ],
     },
     {

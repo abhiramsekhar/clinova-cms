@@ -121,3 +121,8 @@ class LabDomainTests(APITestCase):
         # Unauthenticated request -> 401
         res_anon = self.client.get("/api/lab-catalog/")
         self.assertEqual(res_anon.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        res_lab_dashboard = self.client.get("/api/dashboard/lab/", **self.auth_headers(self.user_lab))
+        self.assertEqual(res_lab_dashboard.status_code, status.HTTP_200_OK)
+        res_pharm_dashboard = self.client.get("/api/dashboard/lab/", **headers_pharm)
+        self.assertEqual(res_pharm_dashboard.status_code, status.HTTP_403_FORBIDDEN)

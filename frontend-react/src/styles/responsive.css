@@ -115,6 +115,22 @@
         display: none;
     }
 
+    .app.role-lab_tech .hamburger {
+        display: flex;
+    }
+
+    .app.role-lab_tech.is-sidebar-collapsed .sidebar {
+        transform: translateX(-100%);
+    }
+
+    .app.role-lab_tech.is-sidebar-collapsed .header {
+        left: 0;
+    }
+
+    .app.role-lab_tech.is-sidebar-collapsed .main {
+        margin-left: 0;
+    }
+
     body.role-doctor.is-sidebar-collapsed .sidebar,
     body.role-admin.is-sidebar-collapsed .sidebar {
         width: 72px;
@@ -204,6 +220,111 @@
 
     .main__inner {
         padding: var(--sp-8) var(--sp-10);
+    }
+}
+
+/* ── Lab dashboard orders table ── */
+.lab-filter-panel__search {
+    min-width: 0;
+}
+
+.lab-orders-table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+}
+
+.lab-orders-table {
+    width: 100%;
+    min-width: 960px;
+    table-layout: fixed;
+    border-collapse: collapse;
+}
+
+.lab-orders-table__order {
+    width: 10%;
+}
+
+.lab-orders-table__test {
+    width: 24%;
+}
+
+.lab-orders-table__patient {
+    width: 20%;
+}
+
+.lab-orders-table__priority {
+    width: 12%;
+}
+
+.lab-orders-table__status {
+    width: 19%;
+}
+
+.lab-orders-table__action {
+    width: 15%;
+}
+
+.lab-orders-table th,
+.lab-orders-table td {
+    padding: 0.875rem 1rem;
+    text-align: left;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border);
+}
+
+.lab-orders-table th {
+    color: var(--muted);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.lab-orders-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.lab-orders-table__id,
+.lab-orders-table__priority,
+.lab-orders-table__status,
+.lab-orders-table__action {
+    white-space: nowrap;
+}
+
+.lab-orders-table__test-name {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.lab-orders-table__patient-name span,
+.lab-orders-table__patient-id {
+    display: block;
+}
+
+.lab-orders-table__patient-id {
+    margin-top: 0.25rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+}
+
+@media (max-width: 639px) {
+    .lab-module-page .page-header {
+        align-items: flex-start;
+        padding: var(--sp-4);
+    }
+
+    .lab-page-header__icon {
+        width: 38px;
+        height: 38px;
+    }
+
+    .lab-filter-panel__search,
+    .lab-filter-panel__field {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+
+    .lab-pagination {
+        align-items: flex-start;
     }
 }
 

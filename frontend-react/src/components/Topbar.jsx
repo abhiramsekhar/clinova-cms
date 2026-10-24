@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import Icon from './Icon';
 import { useAuth } from '../auth/AuthContext';
@@ -18,6 +18,8 @@ const ROLE_LABELS = {
 export function Topbar({ onToggleSidebar }) {
   const { user, role, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notifMenuOpen, setNotifMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
@@ -35,6 +37,20 @@ export function Topbar({ onToggleSidebar }) {
   const initials = getInitials(name);
   const formattedName = displayName(name, role);
   const patientSearch = searchQuery.trim();
+  const isLabDashboard = location.pathname === '/lab/dashboard';
+  const labPatientSearch = searchParams.get('patientSearch') || '';
+
+  const updateLabPatientSearch = (value) => {
+    setSearchParams((currentParams) => {
+      const nextParams = new URLSearchParams(currentParams);
+      if (value) {
+        nextParams.set('patientSearch', value);
+      } else {
+        nextParams.delete('patientSearch');
+      }
+      return nextParams;
+    }, { replace: true });
+  };
 
   const { data: patientSearchData, isFetching: isSearchingPatients, error: patientSearchError, refetch: retryPatientSearch } = useQuery({
     queryKey: ['globalPatientSearch', role, patientSearch],
@@ -160,7 +176,29 @@ export function Topbar({ onToggleSidebar }) {
           <Icon name="icon-menu" size={20} />
         </button>
 
-        {role !== 'LAB_TECH' && (
+        {isLabDashboard ? (
+          <form
+            className="search-bar"
+            id="lab-patient-search"
+            ref={searchRef}
+            style={{ maxWidth: '340px', position: 'relative' }}
+            onSubmit={(event) => event.preventDefault()}
+          >
+            <span className="search-bar__icon">
+              <Icon name="icon-search" size={16} />
+            </span>
+            <input
+              ref={searchInputRef}
+              type="search"
+              className="search-bar__input"
+              value={labPatientSearch}
+              onChange={(event) => updateLabPatientSearch(event.target.value)}
+              placeholder="Search patient name or ID..."
+              aria-label="Search lab orders by patient name or ID"
+              id="lab-search-input"
+            />
+          </form>
+        ) : role !== 'LAB_TECH' && (
           <form
             onSubmit={handleSearchSubmit}
             className="search-bar"

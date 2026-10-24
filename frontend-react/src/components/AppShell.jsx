@@ -7,10 +7,14 @@ import SessionWarning from './SessionWarning';
 
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [labSidebarCollapsed, setLabSidebarCollapsed] = useState(false);
   const { role } = useAuth();
 
   return (
-    <div className={`app role-${role?.toLowerCase() || 'unknown'}`} id="app">
+    <div
+      className={`app role-${role?.toLowerCase() || 'unknown'}${labSidebarCollapsed ? ' is-sidebar-collapsed' : ''}`}
+      id="app"
+    >
       <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -24,7 +28,15 @@ export function AppShell() {
       />
 
       <div className="main">
-        <Topbar onToggleSidebar={() => setSidebarOpen((prev) => !prev)} />
+        <Topbar
+          onToggleSidebar={() => {
+            if (role === 'LAB_TECH' && window.matchMedia('(min-width: 1024px)').matches) {
+              setLabSidebarCollapsed((prev) => !prev);
+              return;
+            }
+            setSidebarOpen((prev) => !prev);
+          }}
+        />
         <main className="main__inner" id="page-content">
           <Outlet />
         </main>

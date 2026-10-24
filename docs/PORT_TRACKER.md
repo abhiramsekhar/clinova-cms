@@ -26,12 +26,12 @@
 | P5 | Pharmacy Suppliers | TODO | |
 | P6 | Pharmacy Stock Alerts | TODO | |
 | P7 | Pharmacy Dispensing History | TODO | |
-| L1 | Lab Dashboard | TODO | |
-| L2 | Lab Test Queue | TODO | |
-| L3 | Lab Completed Tests | TODO | |
-| L4 | Lab Results | TODO | |
-| L5 | Lab Catalog | TODO | |
-| L6 | Lab Billing | TODO | |
+| L1 | Lab Dashboard | IN PROGRESS | Preserved existing design; active queue now includes IN_PROGRESS and backend processing KPI counts PROCESSING + IN_PROGRESS; build/backend tests pass; live browser verification pending |
+| L2 | Lab Test Queue | IN PROGRESS | Real paginated orders, search/status filters, STAT/URGENT/Routine sorting, collect/process/result actions and dynamic catalog-based result form; backend transitions and permissions enforced; build/backend tests pass; browser verification pending |
+| L3 | Lab Completed Tests | IN PROGRESS | Completed orders require a saved result; date/priority/search filters, turnaround time, result details and print report; build/backend tests pass; browser verification pending |
+| L4 | Lab Results | IN PROGRESS | Real result/order join, parameter values, units, catalog ranges/flags, date/type/status filters, result entry/edit and print via Completed Tests; verification state is unsupported; browser verification pending |
+| L5 | Lab Catalog | IN PROGRESS | Real paginated read-only catalog, search and details with specimen, price, turnaround, parameters/ranges and active state; Admin-only edits remain outside Lab Tech page; browser verification pending |
+| L6 | Lab Billing | IN PROGRESS | Real bill list filtered to LAB_TEST items, patient/invoice search, payment status, receipt details and print; LAB_TECH payment writes are blocked by backend permissions; browser verification pending |
 | A1 | Admin Dashboard | IN PROGRESS | Maps the endpoint's six actual fields and formats paise once; endpoint explicitly Admin-only; verified by AdminDomainTests (Admin allowed, other roles denied) and React production build; live browser verification pending |
 | A2 | Admin Staff | IN PROGRESS | API-backed paginated/filterable list and create/edit/deactivate workflows; creation atomically links a password-validated login and Doctor profile where applicable; 18 AdminDomainTests and React production build pass; live browser verification pending; legacy schedule editor awaits a supported API |
 | A3 | Admin Users | IN PROGRESS | Uses paginated `/users/`, complete-dataset search/role/status filters, password-reset modal and confirmed unlock; reset API validates Django password policy; 21 AdminDomainTests and build pass; browser verification pending; account creation remains in A2 Staff |

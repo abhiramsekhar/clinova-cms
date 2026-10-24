@@ -1,5 +1,4 @@
 import apiClient from './client';
-import { normalizeError } from './errors';
 
 export const notificationsApi = {
   list: async (params = {}) => {
@@ -180,6 +179,25 @@ export const labOrdersApi = {
   },
   cancel: async (id, data = {}) => {
     const res = await apiClient.post(`/lab-orders/${encodeURIComponent(id)}/cancel/`, data);
+    return res.data;
+  },
+  updateStatus: async (id, status) => {
+    const res = await apiClient.post(`/lab-orders/${encodeURIComponent(id)}/update-status/`, { status });
+    return res.data;
+  },
+  enterResult: async (id, data) => {
+    const res = await apiClient.post(`/lab-orders/${encodeURIComponent(id)}/enter-result/`, data);
+    return res.data;
+  },
+};
+
+export const labResultsApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/lab-results/', { params });
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/lab-results/${encodeURIComponent(id)}/`);
     return res.data;
   },
 };

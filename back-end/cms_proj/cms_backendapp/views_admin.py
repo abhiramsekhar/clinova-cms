@@ -386,7 +386,7 @@ class DashboardViewSet(viewsets.ViewSet):
             "outOfStockMedicines": out_of_stock,
         }, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=["get"], url_path="lab")
+    @action(detail=False, methods=["get"], url_path="lab", permission_classes=[IsRole("ADMIN", "LAB_TECH")()])
     def lab_dashboard(self, request):
         from cms_doctorapp.models import LabTest
 
@@ -396,7 +396,7 @@ class DashboardViewSet(viewsets.ViewSet):
         return Response({
             "pending": orders.filter(status="ORDERED").count(),
             "sampleCollected": orders.filter(status="SAMPLE_COLLECTED").count(),
-            "processing": orders.filter(status="PROCESSING").count(),
+            "processing": orders.filter(status__in=["PROCESSING", "IN_PROGRESS"]).count(),
             "completedToday": orders.filter(status="COMPLETED", completed_at__date=today).count(),
         }, status=status.HTTP_200_OK)
 
