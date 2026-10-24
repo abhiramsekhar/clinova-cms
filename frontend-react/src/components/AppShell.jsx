@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
 import { useAuth } from '../auth/AuthContext';
+import SessionWarning from './SessionWarning';
 
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -28,6 +29,8 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+
+      <SessionWarning />
     </div>
   );
 }
