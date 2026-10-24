@@ -3,16 +3,7 @@ import ModulePage from '../shared/ModulePage';
 
 export { ReceptionPatientsPage } from './ReceptionPatientsPage';
 
-export function ReceptionAppointmentsPage() {
-  return (
-    <ModulePage
-      title="Appointment Booking & Slots"
-      subtitle="Book consultation appointments, manage walk-in queues, and check-in arrivals"
-      icon="icon-calendar"
-      actionLabel="Book Appointment"
-    />
-  );
-}
+export { ReceptionAppointmentsPage } from './ReceptionAppointmentsPage';
 
 export function ReceptionBillingPage() {
   return (
