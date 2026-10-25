@@ -1,27 +1,95 @@
+import './appointment-actions.css';
 import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
-import apiClient from '../../api/client';
-import { appointmentsApi, patientsApi, staffApi, billsApi } from '../../api/resources';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { appointmentsApi, patientsApi, staffApi } from '../../api/resources';
 import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
 import { Modal, ConfirmDialog, FormField, DataTable, useToast } from '../../components/ui';
 import { ErrorState } from '../../components/States';
 import { Format, formatTime, formatDate } from '../../utils/format';
 
+const CLINIC_TIME_ZONE = import.meta.env.VITE_CLINIC_TIME_ZONE || 'Asia/Kolkata';
 function localDateString(date = new Date()) {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: CLINIC_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+function clinicMinute(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: CLINIC_TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  return Number(parts.find(p => p.type === 'hour').value) * 60 + Number(parts.find(p => p.type === 'minute').value);
+}
+function slotHasNotStarted(slot, minute) {
+  const [hour, minutes] = slot.time.split(':').map(Number);
+  return hour * 60 + minutes >= minute;
+}
+
+function addDaysToDateString(dateString, days) {
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(year, month - 1, day + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+const NON_CANCELLED_APPOINTMENT_STATUSES = 'SCHEDULED,CHECKED_IN,IN_PROGRESS,COMPLETED,NO_SHOW';
+
+function printAppointmentToken(appointment, onPrintClosed, preparedWindow = null) {
+  if (!appointment?.tokenNumber && !appointment?.token_number) return false;
+  const printWindow = preparedWindow || window.open('', '_blank', 'width=620,height=700');
+  if (!printWindow) return false;
+  const escape = (value) => String(value ?? '—').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[char]));
+  const token = appointment.tokenNumber || appointment.token_number;
+  const patientName = appointment.patientName || appointment.patient?.name || 'Patient';
+  const mrn = appointment.patientMrn || appointment.patient?.mrn;
+  const doctor = appointment.doctorName || appointment.doctor?.name || 'Doctor';
+  const department = appointment.departmentName || appointment.department?.name || '—';
+  const appointmentDate = formatDate(appointment.date);
+  const appointmentTime = formatTime(appointment.time);
+  printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Appointment Token ${escape(token)}</title>
+    <style>
+      @page{size:A5 portrait;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17343A;margin:0}
+      .ticket{max-width:560px;margin:0 auto;border:2px solid #05668D;border-radius:12px;padding:20px}
+      header{text-align:center;border-bottom:1px solid #cfe0e4;padding-bottom:12px;margin-bottom:14px}
+      header h1{font-size:20px;color:#05668D;margin:0 0 4px}header p{margin:0;color:#607d85;font-size:12px}
+      .token{text-align:center;color:#05668D;font-weight:800;font-size:46px;margin:8px 0 14px}
+      table{width:100%;border-collapse:collapse}th,td{padding:7px 4px;border-bottom:1px solid #e5edef;text-align:left;font-size:13px}
+      th{width:36%;color:#607d85;font-weight:600}.footer{text-align:center;color:#607d85;font-size:11px;margin-top:14px}
+    </style></head><body><main class="ticket"><header><h1>Clinova Healthcare</h1><p>Appointment Token</p></header>
+    <div class="token">#${escape(token)}</div><table><tbody>
+    <tr><th>Patient</th><td>${escape(patientName)}</td></tr><tr><th>MRN</th><td>${escape(mrn)}</td></tr>
+    <tr><th>Doctor</th><td>${escape(doctor)}</td></tr><tr><th>Department</th><td>${escape(department)}</td></tr>
+    <tr><th>Date</th><td>${escape(appointmentDate)}</td></tr><tr><th>Time</th><td>${escape(appointmentTime)}</td></tr>
+    </tbody></table><div class="footer">${appointment.bookingMode === 'WALK_IN' ? 'You are checked in. Please wait for your token.' : 'Please arrive at the reception desk for check-in.'}</div></main></body></html>`);
+  printWindow.document.close();
+  let finished = false;
+  const finishAfterPrint = () => {
+    if (finished) return;
+    finished = true;
+    printWindow.close();
+    onPrintClosed();
+  };
+  printWindow.addEventListener('afterprint', finishAfterPrint, { once: true });
+  printWindow.focus();
+  printWindow.print();
+  return true;
 }
 
 export function ReceptionAppointmentsPage() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const preselectedPatientId = searchParams.get('patientId');
   const initialSearch = searchParams.get('search') || '';
   const toast = useToast();
   const queryClient = useQueryClient();
 
   const todayStr = localDateString();
-  const [filterDate, setFilterDate] = useState(todayStr);
+  const firstPriorDate = addDaysToDateString(todayStr, 1);
+  const lastPriorDate = addDaysToDateString(todayStr, 28);
+  const [mainSection, setMainSection] = useState('today');
+  const appointmentView = mainSection === 'today' ? 'today_schedule' : 'picked_date';
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const changeFilter = (setter, value) => { setter(value); setPage(1); };
+  const [filterDate, setFilterDate] = useState('');
   const [filterDoctor, setFilterDoctor] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [searchQuery, setSearchQuery] = useState(initialSearch);
@@ -33,6 +101,10 @@ export function ReceptionAppointmentsPage() {
   // Modals state
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState(1);
+  const [currentMinute, setCurrentMinute] = useState(() => {
+    const now = new Date();
+    return clinicMinute(now);
+  });
   const [bookingData, setBookingData] = useState({
     patient: null,
     doctor: null,
@@ -44,32 +116,44 @@ export function ReceptionAppointmentsPage() {
     paymentMethod: 'CASH',
   });
   const [bookedResult, setBookedResult] = useState(null);
-
-  // Collect Fee Modal state
-  const [feeModalAppt, setFeeModalAppt] = useState(null);
-  const [feePaymentMethod, setFeePaymentMethod] = useState('CASH');
-  const [feeAmountRupees, setFeeAmountRupees] = useState('');
+  const [arrivalConfirmed, setArrivalConfirmed] = useState(false);
+  useEffect(() => { setArrivalConfirmed(false); }, [isWizardOpen, bookingData.patient, bookingData.mode]);
 
   // Cancel Modal state
   const [cancelModalAppt, setCancelModalAppt] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
-  const [cancelRefund, setCancelRefund] = useState(true);
 
   // No-Show Confirm state
   const [noShowAppt, setNoShowAppt] = useState(null);
 
   // Fetch Appointments
-  const { data: appointmentsData, isLoading: apptsLoading, error: apptsError, refetch: refetchAppts } = useQuery({
-    queryKey: ['appointmentsList', filterDate, filterDoctor, filterStatus, searchQuery],
+  const { data: appointmentTabCounts } = useQuery({
+    queryKey: ['appointmentTabCounts', todayStr],
     queryFn: async () => {
-      const params = { page_size: 200 };
-      if (filterDate) params.date = filterDate;
+      const result = await appointmentsApi.list({ date: todayStr, page_size: 1 });
+      return { scheduledToday: result.count || 0 };
+    },
+    refetchInterval: 30_000,
+  });
+
+  const { data: appointmentsData, isLoading: apptsLoading, error: apptsError, refetch: refetchAppts } = useQuery({
+    queryKey: ['appointmentsList', todayStr, appointmentView, filterDate, filterDoctor, filterStatus, searchQuery, page],
+    enabled: appointmentView !== 'picked_date' || Boolean(filterDate && filterDate !== todayStr),
+    queryFn: async () => {
+      const params = { page_size: pageSize, page };
+      if (mainSection === 'records') params.exclude_today = 'true';
+      if (appointmentView === 'today_schedule') {
+        params.date = todayStr;
+
+      } else if (appointmentView === 'picked_date' && filterDate) {
+        params.date = filterDate;
+      }
       if (filterDoctor) params.doctor = filterDoctor;
       if (filterStatus) params.status = filterStatus;
       if (searchQuery) params.search = searchQuery;
-      const res = await appointmentsApi.list(params);
-      return Array.isArray(res) ? res : (res?.results || []);
+      return appointmentsApi.list(params);
     },
+    refetchInterval: 30_000,
   });
 
   // Fetch Doctors
@@ -90,46 +174,84 @@ export function ReceptionAppointmentsPage() {
     },
   });
 
-  const apptsList = Array.isArray(appointmentsData) ? appointmentsData : [];
+  const apptsList = Array.isArray(appointmentsData) ? appointmentsData : (appointmentsData?.results || []);
   const doctorsList = Array.isArray(doctorsData) ? doctorsData : [];
   const patientsList = Array.isArray(patientsData) ? patientsData : [];
 
+  const slotDate = bookingData.mode === 'WALK_IN' ? todayStr : bookingData.date;
+
+  const { data: bookingQuote, isLoading: quoteLoading, error: quoteError, refetch: refetchQuote } = useQuery({
+    queryKey: ['appointmentBookingQuote', bookingData.patient?.id || bookingData.patient?.patient_id, bookingData.doctor?.id || bookingData.doctor?.staff_id],
+    queryFn: () => appointmentsApi.bookingQuote({
+      patient: bookingData.patient.id || bookingData.patient.patient_id,
+      doctor: bookingData.doctor.id || bookingData.doctor.staff_id,
+    }),
+    enabled: Boolean(bookingData.patient && bookingData.doctor),
+  });
+
   // Slot board for selected doctor & date
-  const { data: slotBoardData, isLoading: slotsLoading, error: slotsError, refetch: refetchSlots } = useQuery({
-    queryKey: ['slotBoard', bookingData.doctor?.id, bookingData.date],
+  const { data: slotBoardData, isLoading: slotsLoading, isFetching: slotsFetching, error: slotsError, refetch: refetchSlots } = useQuery({
+    queryKey: ['slotBoard', bookingData.doctor?.id || bookingData.doctor?.staff_id, slotDate],
     queryFn: async () => {
-      if (!bookingData.doctor?.id) return [];
+      const doctorId = bookingData.doctor?.id || bookingData.doctor?.staff_id;
+      if (!doctorId) return [];
       const res = await appointmentsApi.slotBoard({
-        doctor: bookingData.doctor.id,
-        date: bookingData.date,
+        doctor: doctorId,
+        date: slotDate,
       });
       return Array.isArray(res) ? res : [];
     },
-    enabled: !!(bookingData.doctor?.id && bookingData.mode === 'PRIOR'),
+    enabled: Boolean(isWizardOpen && wizardStep >= 3 && wizardStep <= 4 && bookingData.doctor),
+    staleTime: 0,
+    refetchInterval: isWizardOpen && wizardStep >= 3 ? (bookingData.mode === 'WALK_IN' ? 15_000 : 60_000) : false,
   });
+  const walkinAvailableSlots = useMemo(
+    () => (slotBoardData || []).filter((slot) => slot.state === 'free' && slotHasNotStarted(slot, currentMinute)),
+    [slotBoardData, currentMinute],
+  );
+  const selectedSlotAvailability = slotBoardData?.find((slot) => slot.time === bookingData.slot?.time);
+  const selectedSlotIsAvailable = selectedSlotAvailability?.state === 'free' &&
+    (bookingData.mode !== 'WALK_IN' || slotHasNotStarted(selectedSlotAvailability, currentMinute));
+  const bookingPatientId = bookingData.patient?.id || bookingData.patient?.patient_id;
+  const bookingDoctorId = bookingData.doctor?.id || bookingData.doctor?.staff_id;
+  const sameDoctorDayQuery = useQuery({
+    queryKey: ['sameDoctorDayAppointment', bookingPatientId, bookingDoctorId, slotDate],
+    queryFn: () => appointmentsApi.list({
+      patient: bookingPatientId,
+      doctor: bookingDoctorId,
+      date: slotDate,
+      status: NON_CANCELLED_APPOINTMENT_STATUSES,
+      page_size: 1,
+    }),
+    enabled: Boolean(isWizardOpen && wizardStep >= 3 && bookingPatientId && bookingDoctorId),
+    staleTime: 0,
+    refetchInterval: isWizardOpen && wizardStep >= 3 ? 15_000 : false,
+  });
+  const sameDoctorDayAppointments = Array.isArray(sameDoctorDayQuery.data)
+    ? sameDoctorDayQuery.data
+    : (sameDoctorDayQuery.data?.results || []);
+  const hasSameDoctorDayAppointment = Boolean(
+    sameDoctorDayQuery.data?.count > 0 || sameDoctorDayAppointments.length > 0
+  );
 
-  // Next walk-in slot
-  const { data: nextWalkinSlot, isLoading: walkinLoading, error: walkinError, refetch: refetchWalkinSlot } = useQuery({
-    queryKey: ['nextWalkinSlot', bookingData.doctor?.id],
-    queryFn: async () => {
-      if (!bookingData.doctor?.id) return null;
-      return await appointmentsApi.nextWalkinSlot({ doctor: bookingData.doctor.id });
-    },
-    enabled: !!(bookingData.doctor?.id && bookingData.mode === 'WALK_IN'),
-  });
-
-  const feeBillId = feeModalAppt?.billId;
-  const { data: feeBill, isLoading: feeBillLoading, error: feeBillError, refetch: refetchFeeBill } = useQuery({
-    queryKey: ['receptionAppointmentBill', feeBillId],
-    queryFn: () => billsApi.get(feeBillId),
-    enabled: !!feeBillId,
-  });
 
   useEffect(() => {
-    if (feeBill?.balanceDue != null) {
-      setFeeAmountRupees((feeBill.balanceDue / 100).toFixed(2));
-    }
-  }, [feeBill?.id, feeBill?.balanceDue]);
+    if (!isWizardOpen || (wizardStep < 3 || wizardStep > 4) || bookingData.mode !== 'WALK_IN') return undefined;
+    const updateCurrentMinute = () => {
+      const now = new Date();
+      setCurrentMinute(clinicMinute(now));
+    };
+    updateCurrentMinute();
+    const timer = setInterval(updateCurrentMinute, 10_000);
+    return () => clearInterval(timer);
+  }, [isWizardOpen, wizardStep, bookingData.mode]);
+
+  useEffect(() => {
+    if (!isWizardOpen || wizardStep !== 3 || bookingData.mode !== 'WALK_IN' || slotsLoading || slotsFetching) return;
+    setBookingData((previous) => {
+      return { ...previous, slot: walkinAvailableSlots[0] || null };
+    });
+  }, [isWizardOpen, wizardStep, bookingData.mode, slotsLoading, slotsFetching, walkinAvailableSlots]);
 
   // Pre-select patient if query param passed
   useEffect(() => {
@@ -151,8 +273,10 @@ export function ReceptionAppointmentsPage() {
     onSuccess: () => {
       toast.success('Patient checked in successfully.');
       queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['appointmentTabCounts'] });
       queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
       queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionScheduledAppointments'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to check in patient.';
@@ -160,16 +284,48 @@ export function ReceptionAppointmentsPage() {
     },
   });
 
+  const [undoNoShowAppt, setUndoNoShowAppt] = useState(null);
+  const undoNoShowMutation = useMutation({
+    mutationFn: (id) => appointmentsApi.undoNoShow(id),
+    onSuccess: () => {
+      setUndoNoShowAppt(null);
+      toast.success('No-show undone. Verify the appointment and check in the patient.');
+      for (const key of ['appointmentsList', 'appointmentTabCounts', 'receptionAppointmentsToday', 'receptionDashboard', 'receptionScheduledAppointments']) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Unable to undo No-show.'),
+  });
+  const [printingToken, setPrintingToken] = useState(false);
+  const printPriorToken = async (appointment) => {
+    // Open synchronously so browser popup blocking does not follow the API wait.
+    const printWindow = window.open('', '_blank', 'width=620,height=700');
+    if (!printWindow) { toast.error('Allow pop-ups to print the appointment token.'); return; }
+    setPrintingToken(true);
+    try {
+      const verified = await appointmentsApi.printToken(appointment.id || appointment.appointment_id);
+      printAppointmentToken(verified, () => {}, printWindow);
+    } catch (err) {
+      printWindow.close();
+      toast.error(err?.response?.data?.detail || 'Unable to print this token.');
+    } finally {
+      setPrintingToken(false);
+    }
+  };
+
   const cancelMutation = useMutation({
-    mutationFn: async ({ id, reason, refund }) =>
-      await appointmentsApi.cancel(id, { reason, refund }),
+    mutationFn: async ({ id, reason }) =>
+      await appointmentsApi.cancel(id, { reason }),
     onSuccess: () => {
       toast.success('Appointment cancelled.');
+      queryClient.invalidateQueries({ queryKey: ['slotBoard'] });
       setCancelModalAppt(null);
       setCancelReason('');
       queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['appointmentTabCounts'] });
       queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
       queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionScheduledAppointments'] });
       queryClient.invalidateQueries({ queryKey: ['billsList'] });
       queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
     },
@@ -182,11 +338,14 @@ export function ReceptionAppointmentsPage() {
   const noShowMutation = useMutation({
     mutationFn: async (id) => await appointmentsApi.noShow(id),
     onSuccess: () => {
-      toast.success('Marked as No-show. Slot released.');
+      toast.success('Appointment marked as No-show.');
+      queryClient.invalidateQueries({ queryKey: ['slotBoard'] });
       setNoShowAppt(null);
       queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['appointmentTabCounts'] });
       queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
       queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionScheduledAppointments'] });
     },
     onError: (err) => {
       const msg = err?.response?.data?.detail || 'Failed to mark as no-show.';
@@ -194,36 +353,40 @@ export function ReceptionAppointmentsPage() {
     },
   });
 
-  const collectFeeMutation = useMutation({
-    mutationFn: async ({ billId, amount, method }) =>
-      await billsApi.receivePayment(billId, { amount, method }),
-    onSuccess: () => {
-      toast.success('Payment received. You can check the patient in now.');
-      setFeeModalAppt(null);
-      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['billsList'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentBill'] });
-    },
-    onError: (err) => {
-      const msg = err?.response?.data?.detail || 'Failed to record payment.';
-      toast.error(msg);
-    },
-  });
-
   const bookMutation = useMutation({
     mutationFn: async () => {
+      const patientId = bookingData.patient.id || bookingData.patient.patient_id;
+      const doctorId = bookingData.doctor.id || bookingData.doctor.staff_id;
+      const appointmentDate = bookingData.mode === 'WALK_IN' ? todayStr : bookingData.date;
+      const existingAppointments = await appointmentsApi.list({
+        patient: patientId,
+        doctor: doctorId,
+        date: appointmentDate,
+        status: NON_CANCELLED_APPOINTMENT_STATUSES,
+        page_size: 1,
+      });
+      const existingRows = Array.isArray(existingAppointments)
+        ? existingAppointments
+        : (existingAppointments?.results || []);
+      if (existingAppointments?.count > 0 || existingRows.length > 0) {
+        const duplicateError = new Error('This patient already has an appointment with this doctor on the selected date.');
+        duplicateError.response = { data: { detail: duplicateError.message, code: 'DUPLICATE_DOCTOR_DAY' } };
+        throw duplicateError;
+      }
+
       const payload = {
-        patientId: bookingData.patient.id || bookingData.patient.patient_id,
-        doctorId: bookingData.doctor.id || bookingData.doctor.staff_id,
+        patientId,
+        doctorId,
+        departmentId: bookingData.doctor.departmentId || bookingData.doctor.department_id,
         mode: bookingData.mode,
-        date: bookingData.mode === 'WALK_IN' ? todayStr : bookingData.date,
-        time: bookingData.mode === 'WALK_IN' ? nextWalkinSlot?.time : bookingData.slot?.time,
+        arrivalConfirmed,
+        date: appointmentDate,
+        time: bookingData.slot?.time,
         type: bookingData.type,
+        expectedTotal: bookingQuote.total,
         payment: {
           method: bookingData.paymentMethod,
+          confirmed: true,
         },
       };
       return await appointmentsApi.bookAndPay(payload);
@@ -231,14 +394,24 @@ export function ReceptionAppointmentsPage() {
     onSuccess: (data) => {
       setBookedResult(data.appointment || data);
       setWizardStep(5);
+      queryClient.invalidateQueries({ queryKey: ['slotBoard'] });
+      queryClient.invalidateQueries({ queryKey: ['sameDoctorDayAppointment'] });
+      queryClient.invalidateQueries({ queryKey: ['receptionScheduledAppointments'] });
       queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
+      queryClient.invalidateQueries({ queryKey: ['appointmentTabCounts'] });
       queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
       queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
       queryClient.invalidateQueries({ queryKey: ['billsList'] });
       queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
-      toast.success('Appointment booked and fee collected!');
+      queryClient.invalidateQueries({ queryKey: ['appointmentBookingQuote'] });
+      toast.success('Payment recorded and appointment booked!');
     },
     onError: (err) => {
+      if (err?.response?.data?.code === 'SLOT_UNAVAILABLE') {
+        setBookingData((previous) => ({ ...previous, slot: null }));
+        setWizardStep(3);
+        queryClient.invalidateQueries({ queryKey: ['slotBoard'] });
+      }
       const msg =
         err?.response?.data?.detail ||
         err?.response?.data?.error ||
@@ -256,19 +429,25 @@ export function ReceptionAppointmentsPage() {
       sortable: true,
       render: (r) => <strong style={{ color: 'var(--primary)' }}>#{r.tokenNumber || '-'}</strong>,
     },
+    ...(mainSection === 'records' ? [{
+      key: 'date', label: 'Appointment Date', sortable: true,
+      render: (r) => formatDate(r.date),
+    }, {
+      key: 'createdAt', label: 'Booked On', sortable: true,
+      render: (r) => r.createdAt ? formatDate(r.createdAt) : '—',
+    }] : []),
     {
       key: 'time',
       label: 'Time',
       width: '130px',
       sortable: true,
-      render: (r) => (
-        <div>
-          <div>{formatTime(r.slotTime || r.time || r.appointmentTime)}</div>
-          <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
-            {r.mode === 'WALK_IN' ? 'Walk-in' : 'Prior booking'}
-          </span>
-        </div>
-      ),
+      render: (r) => formatTime(r.slotTime || r.time || r.appointmentTime),
+    },
+    {
+      key: 'bookingMode',
+      label: 'Booking',
+      width: '130px',
+      render: (r) => r.bookingMode === 'WALK_IN' ? 'Walk-in' : 'Prior booking',
     },
     {
       key: 'patientName',
@@ -301,12 +480,6 @@ export function ReceptionAppointmentsPage() {
       ),
     },
     {
-      key: 'fee',
-      label: 'Fee',
-      width: '110px',
-      render: (r) => r.billStatus ? <Badge status={r.billStatus} /> : <span style={{ color: 'var(--muted)' }}>-</span>,
-    },
-    {
       key: 'status',
       label: 'Status',
       sortable: true,
@@ -315,58 +488,31 @@ export function ReceptionAppointmentsPage() {
     {
       key: 'actions',
       label: 'Actions',
-      width: '230px',
+      width: '290px',
       render: (r) => {
-        if (r.status !== 'SCHEDULED') return null;
-        const isPaid = r.billStatus === 'PAID';
-
+        if (r.bookingMode === 'WALK_IN' || !['SCHEDULED', 'NO_SHOW', 'CHECKED_IN'].includes(r.status)) return null;
+        const isScheduled = r.status === 'SCHEDULED';
+        const checkInAllowed = isScheduled && r.date === todayStr && r.billStatus === 'PAID';
+        const busy = checkInMutation.isPending || noShowMutation.isPending || cancelMutation.isPending || undoNoShowMutation.isPending || printingToken;
         return (
-          <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
-            {!isPaid ? (
-              <button
-                type="button"
-                className="btn btn--primary btn--sm"
-                onClick={() => {
-                  setFeeAmountRupees('');
-                  setFeeModalAppt(r);
-                }}
-                disabled={!r.billId}
-                title={!r.billId ? 'No bill is linked to this appointment.' : undefined}
-              >
-                Collect Fee
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                onClick={() => checkInMutation.mutate(r.id || r.appointment_id)}
-                disabled={checkInMutation.isPending}
-              >
-                Check In
-              </button>
-            )}
-
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => setNoShowAppt(r)}
-              title="Patient did not arrive"
-            >
-              No-show
-            </button>
-
-            <button
-              type="button"
-              className="btn btn--danger btn--sm btn--icon"
-              onClick={() => {
-                setCancelModalAppt(r);
-                setCancelReason('');
-                setCancelRefund(true);
-              }}
-              title="Cancel appointment"
-            >
-              <Icon name="icon-x" size={14} />
-            </button>
+          <div className="appointment-actions">
+            {mainSection === 'today' && isScheduled && <button type="button" className="appointment-action appointment-action--checkin"
+              disabled={!checkInAllowed || busy}
+              title={!checkInAllowed ? (r.date !== todayStr ? 'Check-in is available on the appointment date.' : 'Complete payment before check-in.') : 'Check in patient'}
+              onClick={() => checkInMutation.mutate(r.id || r.appointment_id)}>
+              <Icon name="icon-check" size={16} />
+              {checkInMutation.isPending && checkInMutation.variables === (r.id || r.appointment_id) ? 'Checking in…' : 'Check In'}
+            </button>}
+            {mainSection === 'today' && isScheduled && <button type="button" className="appointment-action appointment-action--noshow"
+              disabled={busy || r.date > todayStr} onClick={() => setNoShowAppt(r)}>No-show</button>}
+            {r.status === 'NO_SHOW' && r.date === todayStr && <button type="button" className="appointment-action" disabled={busy || r.billStatus !== 'PAID' || !r.tokenNumber}
+              onClick={() => setUndoNoShowAppt(r)}>Undo No-show</button>}
+            {r.status === 'CHECKED_IN' && r.date === todayStr && <button type="button" className="appointment-action" disabled={busy || r.billStatus !== 'PAID' || !r.tokenNumber}
+              onClick={() => printPriorToken(r)}><Icon name="icon-printer" size={16} /> Print Token</button>}
+            {['SCHEDULED', 'NO_SHOW'].includes(r.status) && <button type="button" className="appointment-action appointment-action--cancel" disabled={busy}
+              onClick={() => { setCancelModalAppt(r); setCancelReason(''); }}>
+              Cancel
+            </button>}
           </div>
         );
       },
@@ -403,17 +549,21 @@ export function ReceptionAppointmentsPage() {
     setPatientSearchInWizard('');
   };
 
+  const displayedSlots = bookingData.mode === 'WALK_IN'
+    ? walkinAvailableSlots
+    : (slotBoardData || []);
+
   return (
     <div>
       {/* Page Header */}
-      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+      <div className="page-header">
         <div className="page-header__info">
-          <h1 className="text-page-title" style={{ margin: '0 0 0.25rem 0' }}>Appointment Scheduling</h1>
+          <h1 className="text-page-title" style={{ margin: '0 0 0.25rem 0' }}>Appointments</h1>
           <p className="text-caption" style={{ margin: 0, color: 'var(--muted)' }}>
-            Book appointments, manage walk-in queues, and check-in arrivals
+            Manage today's appointments and view booking records
           </p>
         </div>
-        <div className="page-header__actions">
+        <div className="page-header__actions" style={{ marginLeft: 'auto' }}>
           <button
             type="button"
             className="btn btn--primary"
@@ -428,85 +578,104 @@ export function ReceptionAppointmentsPage() {
         </div>
       </div>
 
-      {/* Filter Bar */}
-      <div className="glass card" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', borderRadius: '12px', display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', flex: 1, minWidth: '300px' }}>
-          <div className="search-bar" style={{ maxWidth: '280px', flex: 1 }}>
-            <span className="search-bar__icon">
-              <Icon name="icon-search" size={16} />
-            </span>
-            <input
-              type="text"
-              className="search-bar__input"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search patient, doctor..."
-            />
+      <section className="glass card" style={{ padding: 0, marginBottom: '1.5rem', borderRadius: '12px', overflow: 'hidden' }}>
+        <div className="tabs" role="tablist" aria-label="Appointment sections">
+          {[["today", "Today's Appointments"], ['records', 'Appointment Records']].map(([value, label]) => (
+            <button key={value} type="button" role="tab" aria-selected={mainSection === value}
+              className={`tabs__item ${mainSection === value ? 'is-active' : ''}`}
+              onClick={() => changeFilter(setMainSection, value)} style={{ padding: '1rem 1.25rem' }}>
+              {label}{value === 'today' && appointmentTabCounts && <span style={{ marginLeft: '.35rem' }}>({appointmentTabCounts.scheduledToday})</span>}
+            </button>
+          ))}
+        </div>
+        <div className="appointment-filter-panel">
+            {mainSection === 'records' && (
+              <label className="appointment-date-filter">
+                Choose Appointment Date
+                <input
+                  type="date"
+                  className="form-input"
+                  value={filterDate}
+                  onChange={(e) => {
+                    if (e.target.value === todayStr) {
+                      toast.error('Choose a past or future date. Today’s appointments are in Today’s Appointments.');
+                      e.target.value = filterDate;
+                      return;
+                    }
+                    changeFilter(setFilterDate, e.target.value);
+                  }}
+                  aria-label="Pick appointment date"
+                  aria-describedby="appointment-record-date-help"
+                  style={{ width: '165px', padding: '0.5rem 0.75rem' }}
+                />
+                <small id="appointment-record-date-help">Past or future dates only</small>
+              </label>
+            )}
+          <div className="appointment-filter-row">
+            <div className="search-bar" >
+              <span className="search-bar__icon"><Icon name="icon-search" size={16} /></span>
+              <input
+                type="text"
+                className="search-bar__input"
+                value={searchQuery}
+                onChange={(e) => changeFilter(setSearchQuery, e.target.value)}
+                placeholder="Search name, MRN, phone or token..."
+                aria-label="Search appointments by patient name, MRN, phone or token"
+              />
+            </div>
+
+            <select
+              className="form-input"
+              value={filterDoctor}
+              onChange={(e) => changeFilter(setFilterDoctor, e.target.value)}
+              aria-label="Filter by doctor"
+              style={{ width: '180px', padding: '0.5rem 0.75rem' }}
+            >
+              <option value="">All Doctors</option>
+              {doctorsList.map((d) => (
+                <option key={d.id || d.staff_id} value={d.id || d.staff_id}>
+                  {d.name} ({d.departmentName || d.department?.name || 'General'})
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="form-input"
+              value={filterStatus}
+              onChange={(e) => changeFilter(setFilterStatus, e.target.value)}
+              aria-label="Filter by appointment status"
+              style={{ width: '150px', padding: '0.5rem 0.75rem' }}
+            >
+              <option value="">All statuses</option>
+              <option value="SCHEDULED">Scheduled</option>
+              <option value="CHECKED_IN">Checked In</option>
+              <option value="IN_PROGRESS">In Progress</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="CANCELLED">Cancelled</option>
+              <option value="NO_SHOW">No-show</option>
+            </select>
           </div>
 
-          <input
-            type="date"
-            className="form-input"
-            value={filterDate}
-            onChange={(e) => setFilterDate(e.target.value)}
-            style={{ width: '160px', padding: '0.5rem 0.75rem' }}
-          />
 
-          <select
-            className="form-input"
-            value={filterDoctor}
-            onChange={(e) => setFilterDoctor(e.target.value)}
-            style={{ width: '180px', padding: '0.5rem 0.75rem' }}
-          >
-            <option value="">All Doctors</option>
-            {doctorsList.map((d) => (
-              <option key={d.id || d.staff_id} value={d.id || d.staff_id}>
-                {d.name} ({d.departmentName || d.department?.name || 'General'})
-              </option>
-            ))}
-          </select>
-
-          <select
-            className="form-input"
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            style={{ width: '150px', padding: '0.5rem 0.75rem' }}
-          >
-            <option value="">All Statuses</option>
-            <option value="SCHEDULED">Scheduled</option>
-            <option value="CHECKED_IN">Checked In</option>
-            <option value="IN_PROGRESS">In Progress</option>
-            <option value="COMPLETED">Completed</option>
-            <option value="CANCELLED">Cancelled</option>
-            <option value="NO_SHOW">No-show</option>
-          </select>
         </div>
 
-        <button
-          type="button"
-          className="btn btn--secondary btn--sm"
-          onClick={() => {
-            setFilterDate(todayStr);
-            setFilterDoctor('');
-            setFilterStatus('');
-            setSearchQuery('');
-          }}
-        >
-          Reset Filters
-        </button>
-      </div>
-
-      {/* Appointments DataTable */}
-      <div className="glass card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
+        {/* Appointments DataTable */}
+        <div style={{ padding: '1.25rem' }}>
         {apptsError ? (
           <ErrorState title="Unable to load appointments" error={apptsError} onRetry={refetchAppts} />
         ) : (
           <DataTable
+            key={`${appointmentView}-${page}-${searchQuery}-${filterDate}-${filterDoctor}-${filterStatus}`}
             columns={columns}
             data={apptsList}
             isLoading={apptsLoading}
             emptyTitle="No appointments found"
-            emptyMessage="No scheduled appointments found for this selection."
+            emptyMessage={mainSection === 'records' && appointmentView === 'picked_date' && filterDate === todayStr
+              ? 'Open Today’s Appointments to view and manage today’s appointments.'
+
+              : appointmentView === 'picked_date' && !filterDate
+              ? 'Choose a date to view appointments.'
+              : 'No appointments match this view.'}
             emptyAction={
               <button
                 type="button"
@@ -519,16 +688,28 @@ export function ReceptionAppointmentsPage() {
                 Book New Appointment
               </button>
             }
-            perPage={10}
-            defaultSort="time"
+            perPage={pageSize}
+            defaultSort={searchQuery.trim() ? 'date' : 'time'}
+            defaultSortDescending={Boolean(searchQuery.trim())}
           />
         )}
-      </div>
+        {!apptsError && !apptsLoading && (appointmentsData?.count || 0) > 0 && <div className="appointment-pagination">
+          <span className="text-caption">{(page - 1) * pageSize + 1}?{Math.min(page * pageSize, appointmentsData.count)} of {appointmentsData.count} appointments</span>
+          <div style={{ display: 'flex', gap: '.5rem' }}>
+            <button type="button" className="btn btn--secondary btn--sm" disabled={page === 1} onClick={() => setPage(page - 1)}>Previous</button>
+            <button type="button" className="btn btn--secondary btn--sm" disabled={!appointmentsData.next} onClick={() => setPage(page + 1)}>Next</button>
+          </div>
+        </div>}
+        </div>
+      </section>
 
       {/* 5-Step Booking Wizard Modal */}
       <Modal
         isOpen={isWizardOpen}
-        onClose={resetWizard}
+        onClose={() => {
+          resetWizard();
+          navigate('/reception/appointments', { replace: true });
+        }}
         title={
           wizardStep === 1
             ? 'Book Appointment — Step 1: Select Patient'
@@ -540,7 +721,7 @@ export function ReceptionAppointmentsPage() {
             ? 'Book Appointment — Step 4: Consultation Fee & Payment'
             : 'Appointment Confirmed & Token Issued'
         }
-        size={wizardStep === 5 ? 'sm' : 'md'}
+        size={wizardStep === 3 ? 'lg' : wizardStep === 5 ? 'sm' : 'md'}
       >
         {/* Step Indicator */}
         {wizardStep < 5 && (
@@ -732,7 +913,7 @@ export function ReceptionAppointmentsPage() {
           <div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
               <div
-                onClick={() => setBookingData((prev) => ({ ...prev, mode: 'WALK_IN' }))}
+                onClick={() => setBookingData((prev) => ({ ...prev, mode: 'WALK_IN', date: todayStr, slot: null }))}
                 style={{
                   padding: '1rem',
                   borderRadius: '8px',
@@ -744,12 +925,12 @@ export function ReceptionAppointmentsPage() {
               >
                 <div style={{ fontWeight: 700, color: 'var(--text)' }}>Walk-in</div>
                 <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.25rem' }}>
-                  Patient is present now. Immediate next token.
+                  Patient is present today. The next available slot is selected automatically.
                 </div>
               </div>
 
               <div
-                onClick={() => setBookingData((prev) => ({ ...prev, mode: 'PRIOR' }))}
+                onClick={() => setBookingData((prev) => ({ ...prev, mode: 'PRIOR', date: prev.date < firstPriorDate ? firstPriorDate : prev.date, slot: null }))}
                 style={{
                   padding: '1rem',
                   borderRadius: '8px',
@@ -761,118 +942,97 @@ export function ReceptionAppointmentsPage() {
               >
                 <div style={{ fontWeight: 700, color: 'var(--text)' }}>Prior Booking</div>
                 <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.25rem' }}>
-                  Choose date and reserved time slot.
+                  Choose a date from tomorrow through the next 28 days.
                 </div>
               </div>
             </div>
 
-            {bookingData.mode === 'WALK_IN' ? (
-              <div
-                style={{
-                  padding: '1.25rem',
-                  background: 'rgba(2, 195, 154, 0.08)',
-                  borderRadius: '8px',
-                  border: '1px solid rgba(2, 195, 154, 0.25)',
-                  marginBottom: '1rem',
-                  textAlign: 'center',
-                }}
-              >
-                {walkinError ? (
-                  <ErrorState title="Unable to check walk-in availability" error={walkinError} onRetry={refetchWalkinSlot} />
-                ) : walkinLoading ? (
-                  <div>Looking up next walk-in slot...</div>
-                ) : nextWalkinSlot ? (
-                  <div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--muted)', textTransform: 'uppercase' }}>
-                      Next Available Walk-in Token
-                    </div>
-                    <div style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--primary)', margin: '0.25rem 0' }}>
-                      #{nextWalkinSlot.token}
-                    </div>
-                    <div style={{ fontSize: '0.9rem', color: 'var(--text)' }}>
-                      Time: <strong>{formatTime(nextWalkinSlot.time)}</strong> (Today)
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ color: 'var(--danger)' }}>
-                    No walk-in slots remaining today for {bookingData.doctor?.name}.
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div>
+            {sameDoctorDayQuery.isFetching && <p role="status" className="text-caption">Checking this patient’s appointments with the selected doctor for this date…</p>}
+            {sameDoctorDayQuery.error && <ErrorState title="Unable to check for an existing appointment" error={sameDoctorDayQuery.error} onRetry={sameDoctorDayQuery.refetch} />}
+            {hasSameDoctorDayAppointment && <p role="alert" style={{ padding: '.75rem 1rem', borderRadius: 8, color: 'var(--danger, #B42318)', background: 'rgba(220, 38, 38, .08)' }}>
+              This patient already has an appointment with this doctor on {formatDate(slotDate)}. Choose another doctor or date. Cancelled appointments do not prevent rebooking.
+            </p>}
+
+            <div>
+              {bookingData.mode === 'PRIOR' ? (
                 <FormField label="Appointment Date" required>
                   <input
                     type="date"
                     className="form-input"
                     value={bookingData.date}
-                    min={todayStr}
+                    min={firstPriorDate}
+                    max={lastPriorDate}
                     onChange={(e) =>
                       setBookingData((prev) => ({ ...prev, date: e.target.value, slot: null }))
                     }
                   />
                 </FormField>
+              ) : (
+                <p className="text-caption" style={{ margin: '0 0 0.75rem', color: 'var(--muted)' }}>
+                  Next available walk-in slot for {bookingData.doctor?.name} ({formatDate(todayStr)}).
+                </p>
+              )}
 
-                <FormField label="Available Time Slot" required>
-                  {slotsError ? (
-                    <ErrorState title="Unable to load time slots" error={slotsError} onRetry={refetchSlots} />
-                  ) : slotsLoading ? (
-                    <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--muted)' }}>
-                      Loading slots...
-                    </div>
-                  ) : (
+              <FormField label="Available Time Slot" required>
+                {slotsError ? (
+                  <ErrorState title="Unable to load time slots" error={slotsError} onRetry={refetchSlots} />
+                ) : slotsLoading ? (
+                  <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--muted)' }}>Loading slots...</div>
+                ) : bookingData.mode === 'WALK_IN' && walkinAvailableSlots.length ? (
+                  <div style={{ padding: '1rem', borderRadius: '12px', background: 'rgba(5, 102, 141, 0.08)', border: '1px solid var(--border)' }}>
+                    <strong style={{ display: 'block', fontSize: '1.2rem', color: 'var(--primary)' }}>{formatTime(walkinAvailableSlots[0].time)}</strong>
+                    <span>Token #{walkinAvailableSlots[0].token}</span>
+                    <p className="text-caption" style={{ margin: '.5rem 0 0' }}>Automatically selected next available walk-in slot.</p>
+                  </div>
+                ) : bookingData.mode === 'PRIOR' && displayedSlots.length ? (
                     <div
                       style={{
                         display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))',
-                        gap: '0.5rem',
-                        maxHeight: '160px',
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
+                        gap: '0.6rem',
+                        maxHeight: '220px',
                         overflowY: 'auto',
                         padding: '0.25rem',
                       }}
                     >
-                      {slotBoardData?.map((s) => {
+                      {displayedSlots.map((s) => {
                         const isSelected = bookingData.slot?.time === s.time;
-                        const isBooked = s.status === 'booked' || s.status === 'past';
+                        const isUnavailable = s.state !== 'free';
                         return (
                           <button
                             key={s.time}
                             type="button"
-                            disabled={isBooked}
+                            disabled={isUnavailable}
+                            title={isUnavailable ? (s.state === 'booked' ? 'Reserved appointment slot' : 'This slot is no longer available') : `Token #${s.token}`}
                             onClick={() => setBookingData((prev) => ({ ...prev, slot: s }))}
                             className={`btn ${isSelected ? 'btn--primary' : 'btn--secondary'} btn--sm`}
                             style={{
                               padding: '0.5rem 0.25rem',
-                              opacity: isBooked ? 0.4 : 1,
-                              cursor: isBooked ? 'not-allowed' : 'pointer',
+                              opacity: isUnavailable ? 0.75 : 1,
+                              filter: isUnavailable ? 'blur(0.5px)' : 'none',
+                              cursor: isUnavailable ? 'not-allowed' : 'pointer',
                               display: 'flex',
                               flexDirection: 'column',
                               alignItems: 'center',
                             }}
                           >
                             <span>{s.time}</span>
-                            <small style={{ fontSize: '0.65rem' }}>#{s.token}</small>
+                            <small style={{ fontSize: '0.65rem' }}>{`#${s.token}`}{isUnavailable && <span style={{ display: 'block' }}>{s.state === 'booked' ? 'Reserved' : 'Unavailable'}</span>}</small>
                           </button>
                         );
                       })}
                     </div>
-                  )}
-                </FormField>
-              </div>
-            )}
+                ) : (
+                  <p className="text-caption" style={{ padding: '0.85rem', margin: 0, borderRadius: '8px', background: 'var(--surface)' }}>
+                    {bookingData.mode === 'WALK_IN'
+                      ? 'No walk-in slots available for today. Please choose another available doctor.'
+                      : 'No appointment slots are available for this doctor and date.'}
+                  </p>
+                )}
+              </FormField>
+            </div>
 
-            <FormField label="Visit Type">
-              <select
-                className="form-input"
-                value={bookingData.type}
-                onChange={(e) => setBookingData((prev) => ({ ...prev, type: e.target.value }))}
-              >
-                <option value="New Visit">New Visit</option>
-                <option value="Follow-up">Follow-up</option>
-              </select>
-            </FormField>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginTop: '1.25rem', position: 'sticky', bottom: '-1.25rem', padding: '0.75rem 0 0.25rem', background: 'var(--surface)', zIndex: 1 }}>
               <button type="button" className="btn btn--secondary" onClick={() => setWizardStep(2)}>
                 Back
               </button>
@@ -880,9 +1040,7 @@ export function ReceptionAppointmentsPage() {
                 type="button"
                 className="btn btn--primary"
                 disabled={
-                  bookingData.mode === 'WALK_IN'
-                    ? !nextWalkinSlot
-                    : !bookingData.slot
+                  slotsLoading || slotsFetching || !bookingData.slot || !selectedSlotIsAvailable || sameDoctorDayQuery.isFetching || Boolean(sameDoctorDayQuery.error) || hasSameDoctorDayAppointment
                 }
                 onClick={() => setWizardStep(4)}
               >
@@ -917,18 +1075,32 @@ export function ReceptionAppointmentsPage() {
                 <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>Date & Slot</span>
                 <strong>
                   {bookingData.mode === 'WALK_IN'
-                    ? `Today @ ${formatTime(nextWalkinSlot?.time)}`
+                    ? `Today @ ${formatTime(bookingData.slot?.time)}`
                     : `${formatDate(bookingData.date)} @ ${formatTime(bookingData.slot?.time)}`}
                 </strong>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
-                <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>Consultation Fee</span>
-                <strong style={{ fontSize: '1.25rem', color: 'var(--primary)' }}>
-                  {Format.money(bookingData.fee)}
-                </strong>
-              </div>
+              {sameDoctorDayQuery.error ? (
+                <div role="alert" style={{ marginTop: '.75rem' }}><ErrorState title="Unable to verify existing appointments" error={sameDoctorDayQuery.error} onRetry={sameDoctorDayQuery.refetch} /></div>
+              ) : hasSameDoctorDayAppointment ? (
+                <p role="alert" style={{ marginTop: '.75rem', color: 'var(--danger, #B42318)' }}>This patient already has an appointment with this doctor on this date. Return to slot selection and choose another doctor or date.</p>
+              ) : null}
+              {quoteLoading ? <p>Calculating fees…</p> : quoteError ? (
+                <div role="alert" style={{ marginTop: '1rem' }}><ErrorState title="Unable to calculate bill" error={quoteError} onRetry={refetchQuote} /></div>
+              ) : bookingQuote ? (
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.65rem', marginTop: '0.5rem' }}>
+                  {bookingQuote.registrationFeeDue && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}><span>One-time Registration Fee</span><strong>{Format.money(bookingQuote.registrationFee)}</strong></div>}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}><span>Consultation Fee</span><strong>{Format.money(bookingQuote.consultationFee)}</strong></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}><strong>Total Payable</strong><strong style={{ fontSize: '1.25rem', color: 'var(--primary)' }}>{Format.money(bookingQuote.total)}</strong></div>
+                </div>
+              ) : null}
             </div>
 
+            {bookingData.mode === 'WALK_IN' && (
+              <label style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem' }}>
+                <input type="checkbox" checked={arrivalConfirmed} onChange={e => setArrivalConfirmed(e.target.checked)} />
+                I confirm the patient is physically present. Successful payment will check them in.
+              </label>
+            )}
             <FormField label="Payment Method" required>
               <select
                 className="form-input"
@@ -942,7 +1114,7 @@ export function ReceptionAppointmentsPage() {
             </FormField>
 
             <p style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
-              Token number is officially released immediately upon fee confirmation.
+                Confirm collection for the full bill. The appointment token is issued after the payment is saved.
             </p>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1.5rem' }}>
@@ -957,7 +1129,7 @@ export function ReceptionAppointmentsPage() {
               <button
                 type="button"
                 className="btn btn--primary"
-                disabled={bookMutation.isPending}
+                disabled={(bookingData.mode === 'WALK_IN' && !arrivalConfirmed) || bookMutation.isPending || slotsLoading || slotsFetching || !selectedSlotIsAvailable || sameDoctorDayQuery.isFetching || Boolean(sameDoctorDayQuery.error) || hasSameDoctorDayAppointment || quoteLoading || Boolean(quoteError) || !bookingQuote}
                 onClick={() => bookMutation.mutate()}
               >
                 {bookMutation.isPending ? (
@@ -965,7 +1137,7 @@ export function ReceptionAppointmentsPage() {
                     <span className="spinner spinner-sm" /> Booking...
                   </span>
                 ) : (
-                  <span>Collect Fee & Issue Token</span>
+                  <span>{bookingData.mode === 'WALK_IN' ? 'Confirm Payment & Check In' : 'Confirm Payment & Book'}</span>
                 )}
               </button>
             </div>
@@ -992,7 +1164,7 @@ export function ReceptionAppointmentsPage() {
             </div>
 
             <h3 style={{ fontSize: '1.25rem', fontWeight: 700, margin: '0 0 0.5rem 0', color: 'var(--text)' }}>
-              Appointment Confirmed!
+              {bookedResult.bookingMode === 'WALK_IN' ? 'Patient Checked In!' : 'Appointment Confirmed!'}
             </h3>
 
             <div
@@ -1014,112 +1186,54 @@ export function ReceptionAppointmentsPage() {
                 Patient: <strong>{bookedResult.patientName || bookingData.patient?.name}</strong>
               </div>
               <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                MRN: <strong>{bookedResult.patientMrn || bookingData.patient?.mrn || '—'}</strong>
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
                 Doctor: <strong>{bookedResult.doctorName || bookingData.doctor?.name}</strong>
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                Appointment: <strong>{formatDate(bookedResult.date || bookingData.date)} at {formatTime(bookedResult.time || bookingData.slot?.time)}</strong>
               </div>
             </div>
 
+            {bookedResult.bookingMode === 'PRIOR' ? (
+              <>
+                <p className="text-caption">Your token is saved. Printing is available on the appointment date after manual check-in.</p>
+                <button type="button" className="btn btn--primary" style={{ width: '100%' }} onClick={() => {
+                  resetWizard();
+                  navigate('/reception/appointments', { replace: true });
+                }}>Finish</button>
+              </>
+            ) : (
             <button
               type="button"
               className="btn btn--primary"
               style={{ width: '100%' }}
-              onClick={resetWizard}
+              onClick={() => {
+                const opened = printAppointmentToken(bookedResult, () => {
+                  resetWizard();
+                  navigate('/reception/appointments', { replace: true });
+                });
+                if (!opened) toast.error('Allow pop-ups to print the appointment token. The appointment and payment are saved.');
+              }}
+              disabled={!bookedResult.tokenNumber && !bookedResult.token_number}
             >
-              Done & Return to Appointments
+              <Icon name="icon-printer" size={16} /> Print Token &amp; Finish
             </button>
+            )}
           </div>
         )}
       </Modal>
 
-      {/* Collect Fee Modal */}
-      {feeModalAppt && (
-        <Modal
-          isOpen={!!feeModalAppt}
-          onClose={() => setFeeModalAppt(null)}
-          title="Collect Consultation Fee"
-          size="sm"
-        >
-          {feeBillError ? (
-            <ErrorState title="Unable to load appointment bill" error={feeBillError} onRetry={refetchFeeBill} />
-          ) : feeBillLoading ? (
-            <div role="status" style={{ padding: '1rem', textAlign: 'center' }}>Loading bill details…</div>
-          ) : !feeBillId ? (
-            <ErrorState title="No bill linked to this appointment" error="Reload the appointment list and check its billing record." />
-          ) : feeBill ? (
-              <div>
-                <div style={{ padding: '1rem', background: 'var(--surface, #f8fafc)', borderRadius: '8px', marginBottom: '1rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                    <span style={{ color: 'var(--muted)' }}>Token</span>
-                    <strong>#{feeModalAppt.tokenNumber}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                    <span style={{ color: 'var(--muted)' }}>Patient</span>
-                    <strong>{feeModalAppt.patientName || feeModalAppt.patient?.name}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '0.5rem' }}>
-                    <span style={{ color: 'var(--muted)' }}>Balance Due</span>
-                    <strong style={{ color: 'var(--danger)', fontSize: '1.1rem' }}>
-                      {Format.money(feeBill.balanceDue)}
-                    </strong>
-                  </div>
-                </div>
-
-                <FormField label="Payment Amount (₹)" required>
-                  <input
-                    type="number"
-                    className="form-input"
-                    step="0.01"
-                    min="0.01"
-                    max={(feeBill.balanceDue / 100).toFixed(2)}
-                    value={feeAmountRupees}
-                    onChange={(e) => setFeeAmountRupees(e.target.value)}
-                    required
-                  />
-                </FormField>
-
-                <FormField label="Payment Method" required>
-                  <select
-                    className="form-input"
-                    value={feePaymentMethod}
-                    onChange={(e) => setFeePaymentMethod(e.target.value)}
-                  >
-                    <option value="CASH">Cash</option>
-                    <option value="CARD">Card</option>
-                    <option value="UPI">UPI</option>
-                  </select>
-                </FormField>
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-                  <button
-                    type="button"
-                    className="btn btn--secondary"
-                    onClick={() => setFeeModalAppt(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--primary"
-                    disabled={collectFeeMutation.isPending || !feeBill.balanceDue || !feeAmountRupees}
-                    onClick={() => {
-                      const amountPaise = Math.round(Number(feeAmountRupees) * 100);
-                      if (!Number.isFinite(amountPaise) || amountPaise <= 0 || amountPaise > feeBill.balanceDue) {
-                        toast.error(`Enter an amount greater than zero and no more than ${Format.money(feeBill.balanceDue)}.`);
-                        return;
-                      }
-                      collectFeeMutation.mutate({
-                        billId: feeBill.id,
-                        amount: amountPaise,
-                        method: feePaymentMethod,
-                      });
-                    }}
-                  >
-                    Receive Payment
-                  </button>
-                </div>
-              </div>
-          ) : null}
-        </Modal>
-      )}
+      <ConfirmDialog
+        isOpen={!!undoNoShowAppt}
+        onClose={() => setUndoNoShowAppt(null)}
+        title="Undo No-show"
+        message="Confirm the patient is physically present. This restores the existing appointment for manual check-in, using the saved payment and token."
+        confirmLabel="Confirm Arrival & Undo"
+        isLoading={undoNoShowMutation.isPending}
+        onConfirm={() => undoNoShowMutation.mutate(undoNoShowAppt?.id || undoNoShowAppt?.appointment_id)}
+      />
 
       {/* Cancel Appointment Modal */}
       {cancelModalAppt && (
@@ -1141,17 +1255,6 @@ export function ReceptionAppointmentsPage() {
               />
             </FormField>
 
-            <div style={{ margin: '1rem 0' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
-                <input
-                  type="checkbox"
-                  checked={cancelRefund}
-                  onChange={(e) => setCancelRefund(e.target.checked)}
-                />
-                <span>Refund consultation fee if already paid</span>
-              </label>
-            </div>
-
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
               <button
                 type="button"
@@ -1168,7 +1271,6 @@ export function ReceptionAppointmentsPage() {
                   cancelMutation.mutate({
                     id: cancelModalAppt.id || cancelModalAppt.appointment_id,
                     reason: cancelReason.trim(),
-                    refund: cancelRefund,
                   })
                 }
               >
@@ -1184,7 +1286,7 @@ export function ReceptionAppointmentsPage() {
         isOpen={!!noShowAppt}
         onClose={() => setNoShowAppt(null)}
         title="Mark as No-show"
-        message={`The patient did not arrive. The slot will be released for walk-in patients. Are you sure you want to mark Appointment #${noShowAppt?.tokenNumber} as No-show?`}
+        message={`Confirm that the patient has not arrived. Mark Appointment #${noShowAppt?.tokenNumber} as No-show?`}
         confirmLabel="Mark No-show"
         danger
         isLoading={noShowMutation.isPending}

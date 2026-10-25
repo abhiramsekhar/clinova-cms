@@ -5,7 +5,7 @@
 
 export const MIN_YEAR = 1900;
 export const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
-export const GENDERS = ['Male', 'Female', 'Other'];
+export const GENDERS = ['Male', 'Female', 'Others'];
 
 const ok = (value) => ({ valid: true, value, error: '' });
 const fail = (error) => ({ valid: false, value: null, error });
@@ -23,28 +23,36 @@ export function ageFromDob(dob) {
 export function validateName(raw, label = 'Name') {
   const v = String(raw ?? '').trim().replace(/\s+/g, ' ');
   if (!v) return fail(`${label} is required.`);
-  if (v.length < 2) return fail(`${label} must be at least 2 characters.`);
-  if (v.length > 60) return fail(`${label} must be at most 60 characters.`);
+  if ([...v].filter((char) => /[\p{L}\p{M}]/u.test(char)).length < 2) return fail(`${label} must contain at least two letters.`);
+  if (v.length > 100) return fail(`${label} must be at most 100 characters.`);
   if (!/^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]*$/u.test(v)) return fail(`${label} contains invalid characters.`);
   return ok(v);
 }
 
+export function validatePatientName(raw, label = 'Name') {
+  if (typeof raw !== 'string' || !raw) return fail(`${label} is required.`);
+  if (raw.length > 100) return fail(`${label} must be at most 100 characters.`);
+  if (!/^[\p{L}][\p{L}\p{M}]*(?: [\p{L}][\p{L}\p{M}]*)*$/u.test(raw)) return fail(`${label} must contain only letters with single spaces, without leading or trailing spaces.`);
+  const letters = value => [...value].filter(char => /\p{L}/u.test(char)).length;
+  if (letters(raw) < 3 || !raw.split(' ').some(part => letters(part) >= 2)) return fail(`${label} needs at least 3 letters and a proper name, not only single-letter initials.`);
+  return ok(raw.trim());
+}
+
 export function validatePhone(raw, label = 'Phone number') {
-  const v = String(raw ?? '').trim();
+  const v = typeof raw === 'string' ? raw : '';
   if (!v) return fail(`${label} is required.`);
-  if (!/^\+?[\d\s()-]+$/.test(v)) return fail(`${label} contains invalid characters.`);
-  const digits = v.replace(/\D/g, '');
-  if (digits.length < 10 || digits.length > 15) return fail(`${label} must have 10–15 digits.`);
+  if (!/^[6-9]\d{9}$/.test(v)) return fail(`${label} must be exactly 10 digits and start with 6, 7, 8, or 9.`);
   return ok(v);
 }
 
 export function validateDob(raw) {
-  const v = String(raw ?? '').trim();
+  const v = typeof raw === 'string' ? raw : '';
   if (!v) return fail('Date of birth is required.');
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return fail('Enter a valid date of birth.');
-  if (d.getFullYear() < MIN_YEAR) return fail(`Year must be ${MIN_YEAR} or later.`);
-  if (d > new Date()) return fail('Date of birth cannot be in the future.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return fail('Enter a complete valid date of birth.');
+  const d = new Date(`${v}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v || Number(v.slice(0, 4)) < MIN_YEAR) return fail(`Enter a valid date from ${MIN_YEAR} onward.`);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: import.meta.env?.VITE_CLINIC_TIME_ZONE || 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  if (v > today) return fail('Date of birth cannot be in the future.');
   return ok(v);
 }
 
@@ -57,16 +65,21 @@ export function validateGender(raw) {
 
 export function validateAddress(raw) {
   const v = String(raw ?? '').trim();
-  if (v.length > 200) return fail('Address must be at most 200 characters.');
+  if (!v) return fail('Address is required.');
+  if (v.length > 500) return fail('Address must be at most 500 characters.');
   return ok(v);
 }
 
-/** Returns value as an array of strings. */
+/** Preserve the existing array API while validating text entries. */
 export function validateAllergies(raw) {
-  const list = String(raw ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (raw == null || raw === '') return ok([]);
+  if (typeof raw !== 'string' && !Array.isArray(raw)) return fail('Allergies must be text or a list of text entries.');
+  const entries = Array.isArray(raw) ? raw : raw.split(',');
+  if (entries.some(entry => typeof entry !== 'string' || !entry.trim())) return fail('Allergy entries cannot be blank or whitespace-only.');
+  const list = entries.map(entry => entry.trim());
+  if (list.join(', ').length > 1000) return fail('Allergy information must be at most 1000 characters.');
   if (list.length > 20) return fail('Too many allergies (max 20).');
-  if (list.some((a) => a.length > 40)) return fail('Each allergy must be at most 40 characters.');
-  if (list.some((a) => !/^[\p{L}\p{M}\d\s.'’()-]+$/u.test(a))) return fail('Allergies contain invalid characters.');
+  if (list.some(entry => entry.length > 100)) return fail('Each allergy must be at most 100 characters.');
   return ok(list);
 }
 
@@ -89,7 +102,7 @@ export function validatePatientForm(input) {
     }
   };
 
-  run('name', validateName(input.name, 'Full name'));
+  run('name', validatePatientName(input.name, 'Full name'));
   run('phone', validatePhone(input.phone));
   run('dateOfBirth', validateDob(input.dateOfBirth));
   run('gender', validateGender(input.gender));

@@ -6,7 +6,7 @@ const STATUS_COLORS = {
   CHECKED_IN: 'primary',
   IN_PROGRESS: 'primary',
   CANCELLED: 'danger',
-  NO_SHOW: 'danger',
+  NO_SHOW: 'warning',
   SCHEDULED: 'warning',
 
   // Prescriptions / Pharmacy
@@ -29,10 +29,16 @@ const STATUS_COLORS = {
   INACTIVE: 'neutral',
 };
 
+const STATUS_LABELS = {
+  CHECKED_IN: 'Checked In',
+  IN_PROGRESS: 'In Progress',
+  NO_SHOW: 'No-show',
+};
+
 export function Badge({ status, variant, children, className = '' }) {
   const normStatus = status ? String(status).toUpperCase() : '';
   const color = variant || STATUS_COLORS[normStatus] || 'neutral';
-  const label = children || (status ? String(status).replace(/_/g, ' ') : '');
+  const label = children || (STATUS_LABELS[normStatus] || (status ? String(status).replace(/_/g, ' ') : ''));
 
   return (
     <span className={`badge badge--${color} ${className}`.trim()}>

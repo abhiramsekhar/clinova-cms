@@ -1,0 +1,21 @@
+.appointment-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.appointment-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 7px 12px; border: 1px solid #ccdce0; border-radius: 7px; background: #fff; color: #35545c; font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background .15s, border-color .15s; }
+.appointment-action--checkin { background: #087c8c; border-color: #087c8c; color: #fff; }
+.appointment-action--checkin:hover:not(:disabled) { background: #066775; border-color: #066775; }
+.appointment-action--noshow:hover:not(:disabled) { background: #fff7e8; border-color: #c48a25; color: #805409; }
+.appointment-action--cancel { color: #ae3434; border-color: #e9cccc; }
+.appointment-action--cancel:hover:not(:disabled) { background: #fff1f1; border-color: #c35b5b; }
+.appointment-action:focus-visible { outline: 3px solid #61b9cb; outline-offset: 3px; }
+.appointment-action:disabled { opacity: .5; cursor: not-allowed; }
+.appointment-pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+
+.appointment-filter-panel { padding: .85rem 1.25rem; border-bottom: 1px solid var(--border); }
+.appointment-date-filter { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; color: var(--muted); margin-bottom: 1rem; }
+.appointment-filter-row { display: flex; align-items: center; gap: .75rem; }
+.appointment-filter-row .search-bar { flex: 1; min-width: 0; max-width: 450px; }
+.appointment-filter-row > select { flex-shrink: 0; }
+@media (max-width: 640px) {
+  .appointment-filter-row { flex-wrap: wrap; }
+  .appointment-filter-row .search-bar { flex-basis: 100%; max-width: none; }
+  .appointment-filter-row > select { flex: 1; min-width: 0; }
+}

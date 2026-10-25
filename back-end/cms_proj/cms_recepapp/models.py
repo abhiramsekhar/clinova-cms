@@ -4,6 +4,7 @@ Receptionist's own module: FR-REC-01 to FR-REC-07.
 Owns: Patient, Appointment, Bill, BillItem, Payment.
 """
 
+from decimal import Decimal
 from django.db import models, transaction
 from django.core.validators import MinValueValidator
 
@@ -57,6 +58,10 @@ class Patient(models.Model):
 
 
 class Appointment(models.Model):
+    class BookingMode(models.TextChoices):
+        WALK_IN = "WALK_IN", "Walk-in"
+        PRIOR = "PRIOR", "Prior booking"
+
     class Status(models.TextChoices):
         SCHEDULED = "SCHEDULED", "Scheduled"
         CHECKED_IN = "CHECKED_IN", "Checked In"
@@ -76,6 +81,7 @@ class Appointment(models.Model):
     )
     appointment_date = models.DateField()
     time_slot = models.CharField(max_length=20)
+    booking_mode = models.CharField(max_length=10, choices=BookingMode.choices, default=BookingMode.PRIOR)
     appointment_type = models.CharField(max_length=30, default="New Visit")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
     reason = models.TextField(blank=True, null=True)

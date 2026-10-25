@@ -11,6 +11,8 @@ Doctor identifiers over the wire match Staff.staff_id (e.g. staff-doc-01).
 """
 
 import datetime
+import re
+import unicodedata
 from decimal import Decimal
 from rest_framework import serializers
 from django.db import transaction
@@ -29,21 +31,26 @@ class GenderField(serializers.CharField):
             return "Male"
         elif value in ["F", "Female"]:
             return "Female"
-        return value or "Other"
+        return "Others" if value in ["Other", "Others"] else (value or "")
 
     def to_internal_value(self, data):
-        val = str(data).strip().capitalize() if data else ""
-        if val in ["Male", "M"]:
+        val = str(data).strip().lower() if data else ""
+        if val in ["male", "m"]:
             return "M"
-        elif val in ["Female", "F"]:
+        elif val in ["female", "f"]:
             return "F"
-        return "Other"
+        elif val in ["other", "others"]:
+            return "Other"
+        raise serializers.ValidationError("Select Male, Female, or Others.")
 
 
 class PatientSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source="patient_id", read_only=True)
     dateOfBirth = serializers.DateField(source="dob", required=False, allow_null=True)
-    gender = GenderField(required=False, allow_null=True, allow_blank=True)
+    gender = GenderField(required=False, allow_null=False, allow_blank=False)
+    name = serializers.CharField(required=False, allow_blank=False, max_length=100, trim_whitespace=False)
+    phone = serializers.CharField(required=False, allow_blank=False, max_length=20, trim_whitespace=False)
+    address = serializers.CharField(required=False, allow_blank=False, max_length=500, trim_whitespace=True)
     bloodGroup = serializers.CharField(source="blood_group", required=False, allow_null=True, allow_blank=True)
     chronicConditions = serializers.JSONField(source="chronic_conditions", required=False)
     emergencyContact = serializers.CharField(source="emergency_contact", required=False, allow_null=True, allow_blank=True)
@@ -100,19 +107,90 @@ class PatientSerializer(serializers.ModelSerializer):
             "name": obj.assigned_doctor.staff.name,
         }
 
-    def validate(self, attrs):
-        data = self.initial_data
-        dob = attrs.get("dob")
-        name = (attrs.get("name") or "").strip()
+    def validate_bloodGroup(self, value):
+        allowed = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"}
+        if value and value not in allowed:
+            raise serializers.ValidationError("Select a valid blood group.")
+        return value
 
-        if not name and not self.instance:
-            raise serializers.ValidationError({"name": "Patient name is required."})
+    def validate(self, attrs):
+        dob = attrs.get("dob", getattr(self.instance, "dob", None))
+        name = attrs.get("name", "")
+        phone = attrs.get("phone", getattr(self.instance, "phone", None))
+        address = attrs.get("address", getattr(self.instance, "address", None))
+        gender = attrs.get("gender", getattr(self.instance, "gender", None))
+
+        if not self.instance:
+            required = {
+                "name": name,
+                "phone": phone,
+                "dateOfBirth": dob,
+                "gender": gender,
+                "address": address,
+            }
+            missing = {key: "This field is required." for key, value in required.items() if not value}
+            if missing:
+                raise serializers.ValidationError(missing)
+
+        if "name" in attrs:
+            raw_name = self.initial_data.get("name")
+            if not isinstance(raw_name, str) or not raw_name:
+                raise serializers.ValidationError({"name": "Patient name must be text."})
+            parts = raw_name.split(" ")
+            valid_parts = all(part and part[0].isalpha() and all(char.isalpha() or unicodedata.category(char).startswith("M") for char in part) for part in parts)
+            if not valid_parts:
+                raise serializers.ValidationError({"name": "Use only letters with single spaces, without leading or trailing spaces."})
+            if sum(char.isalpha() for char in raw_name) < 3 or not any(sum(char.isalpha() for char in part) >= 2 for part in parts):
+                raise serializers.ValidationError({"name": "Use at least 3 letters and a proper name, not only single-letter initials."})
+            attrs["name"] = raw_name.strip()
+
+        if "phone" in attrs:
+            raw_phone = self.initial_data.get("phone")
+            if not isinstance(raw_phone, str) or not re.fullmatch(r"[6-9][0-9]{9}", raw_phone):
+                raise serializers.ValidationError({"phone": "Enter exactly 10 digits, starting with 6, 7, 8, or 9, without spaces."})
+            attrs["phone"] = raw_phone
+
+        if "dob" in attrs and attrs["dob"] is None:
+            raise serializers.ValidationError({"dateOfBirth": "Date of birth is required."})
+        if "dob" in attrs and not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", str(self.initial_data.get("dateOfBirth", ""))):
+            raise serializers.ValidationError({"dateOfBirth": "Enter a complete date in YYYY-MM-DD format."})
+
+        if address is not None:
+            address = str(address).strip()
+            if not address:
+                raise serializers.ValidationError({"address": "Address is required."})
+            if len(address) > 500:
+                raise serializers.ValidationError({"address": "Address must be at most 500 characters."})
+            attrs["address"] = address
+
+        gender = {"Male": "M", "Female": "F", "Others": "Other"}.get(gender, gender)
+        if gender not in ["M", "F", "Other"]:
+            raise serializers.ValidationError({"gender": "Select Male, Female, or Others."})
+
+        if "allergies" in self.initial_data:
+            raw = self.initial_data["allergies"]
+            if raw is None or raw == "":
+                entries = []
+            elif isinstance(raw, str):
+                entries = raw.split(",")
+            elif isinstance(raw, list):
+                entries = raw
+            else:
+                raise serializers.ValidationError({"allergies": "Allergies must be text or a list of text entries."})
+            if any(not isinstance(entry, str) or not entry.strip() for entry in entries):
+                raise serializers.ValidationError({"allergies": "Allergy entries cannot be blank or whitespace-only."})
+            entries = [entry.strip() for entry in entries]
+            if len(entries) > 20 or any(len(entry) > 100 for entry in entries) or len(", ".join(entries)) > 1000:
+                raise serializers.ValidationError({"allergies": "Use at most 20 allergies, 100 characters each and 1000 characters total."})
+            attrs["allergies"] = ", ".join(entries)
 
         # Under 18 guardian check
         if dob:
-            today = datetime.date.today()
+            today = timezone.localdate()
             if dob > today:
                 raise serializers.ValidationError({"dateOfBirth": "Date of birth cannot be in the future."})
+            if dob < datetime.date(1900, 1, 1):
+                raise serializers.ValidationError({"dateOfBirth": "Date of birth must be in 1900 or later."})
 
             age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
             g_name = attrs.get("guardian_name", getattr(self.instance, "guardian_name", None))
@@ -121,35 +199,20 @@ class PatientSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"detail": "Patients under 18 require guardian details.", "code": "VALIDATION_ERROR"}
                 )
-
-        # Duplicate check on creation
-        if not self.instance:
-            phone = attrs.get("phone")
-            existing = Patient.objects.filter(is_active=True)
-            if dob and existing.filter(name__iexact=name, dob=dob).exists():
-                raise serializers.ValidationError(
-                    {"detail": "This patient is already registered (same name and date of birth).", "code": "DUPLICATE_PATIENT"}
-                )
-            if phone and existing.filter(name__iexact=name, phone=phone).exists():
-                raise serializers.ValidationError(
-                    {"detail": "This patient is already registered (same name and phone).", "code": "DUPLICATE_PATIENT"}
-                )
+            if age < 18 and sum(char.isalpha() for char in str(g_name)) < 2:
+                raise serializers.ValidationError({"guardianName": "Guardian name must contain at least two letters."})
+            if age < 18 and not re.fullmatch(r"[6-9][0-9]{9}", str(g_phone)):
+                raise serializers.ValidationError({"guardianPhone": "Guardian phone must be exactly 10 digits and start with 6, 7, 8, or 9."})
 
         return attrs
 
     def create(self, validated_data):
-        raw_allergies = self.initial_data.get("allergies")
-        if isinstance(raw_allergies, list):
-            validated_data["allergies"] = ", ".join(str(a) for a in raw_allergies)
-        elif isinstance(raw_allergies, str):
-            validated_data["allergies"] = raw_allergies
-
         doc_ident = self.initial_data.get("assignedDoctorId")
         if doc_ident:
             validated_data["assigned_doctor"] = resolve_doctor(doc_ident)
 
         # Auto-generate MRN: CLN-YYYY-XXXX
-        year = datetime.date.today().year
+        year = timezone.localdate().year
         existing_mrns = Patient.objects.filter(mrn__startswith=f"CLN-{year}-").values_list("mrn", flat=True)
         max_seq = 0
         for m in existing_mrns:
@@ -175,18 +238,11 @@ class PatientSerializer(serializers.ModelSerializer):
             validated_data["patient_id"] = f"pat-{str(max_num + 1).zfill(2)}"
 
         if "registered_on" not in validated_data:
-            validated_data["registered_on"] = datetime.date.today()
+            validated_data["registered_on"] = timezone.localdate()
 
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        raw_allergies = self.initial_data.get("allergies")
-        if raw_allergies is not None:
-            if isinstance(raw_allergies, list):
-                validated_data["allergies"] = ", ".join(str(a) for a in raw_allergies)
-            else:
-                validated_data["allergies"] = str(raw_allergies)
-
         if "assignedDoctorId" in self.initial_data:
             doc_ident = self.initial_data.get("assignedDoctorId")
             validated_data["assigned_doctor"] = resolve_doctor(doc_ident) if doc_ident else None
@@ -206,8 +262,10 @@ class AppointmentSerializer(serializers.ModelSerializer):
 
     date = serializers.DateField(source="appointment_date")
     time = serializers.CharField(source="time_slot")
+    bookingMode = serializers.CharField(source="booking_mode", read_only=True)
     type = serializers.CharField(source="appointment_type", default="New Visit")
-    tokenNumber = serializers.IntegerField(source="token_number", required=False, allow_null=True)
+    # Tokens are generated only by the atomic book-and-pay flow after payment.
+    tokenNumber = serializers.IntegerField(source="token_number", read_only=True, allow_null=True)
     billId = serializers.SerializerMethodField()
     billStatus = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
@@ -225,6 +283,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             "department",
             "date",
             "time",
+            "bookingMode",
             "type",
             "status",
             "reason",
@@ -235,7 +294,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             "createdAt",
             "updatedAt",
         ]
-        read_only_fields = ["id", "createdAt", "updatedAt"]
+        read_only_fields = ["id", "status", "createdAt", "updatedAt"]
 
     def get_patient(self, obj):
         if not obj.patient:
@@ -446,6 +505,11 @@ class BillSerializer(serializers.ModelSerializer):
     patientName = serializers.CharField(source="patient.name", read_only=True)
     patientMrn = serializers.CharField(source="patient.mrn", read_only=True)
     appointmentId = serializers.CharField(source="appointment.appointment_id", read_only=True, allow_null=True)
+    appointmentDate = serializers.SerializerMethodField()
+    appointmentTime = serializers.SerializerMethodField()
+    bookingMode = serializers.SerializerMethodField()
+    doctorName = serializers.SerializerMethodField()
+    departmentName = serializers.SerializerMethodField()
     billDate = serializers.DateField(source="bill_date")
     totalAmount = serializers.SerializerMethodField()
     paidAmount = serializers.SerializerMethodField()
@@ -465,6 +529,11 @@ class BillSerializer(serializers.ModelSerializer):
             "patientName",
             "patientMrn",
             "appointmentId",
+            "appointmentDate",
+            "appointmentTime",
+            "bookingMode",
+            "doctorName",
+            "departmentName",
             "billDate",
             "totalAmount",
             "paidAmount",
@@ -492,6 +561,24 @@ class BillSerializer(serializers.ModelSerializer):
 
     def get_totalAmount(self, obj):
         return int(round(float(obj.total_amount) * 100))
+
+    def get_appointmentDate(self, obj):
+        return obj.appointment.appointment_date if obj.appointment_id else None
+
+    def get_appointmentTime(self, obj):
+        return obj.appointment.time_slot if obj.appointment_id else None
+
+    def get_bookingMode(self, obj):
+        return obj.appointment.booking_mode if obj.appointment_id else None
+
+    def get_doctorName(self, obj):
+        appointment = obj.appointment
+        return appointment.doctor.staff.name if appointment and appointment.doctor_id and appointment.doctor.staff_id else None
+
+    def get_departmentName(self, obj):
+        appointment = obj.appointment
+        department = (appointment.department or appointment.doctor.department) if appointment and appointment.doctor_id else None
+        return department.name if department else None
 
     def get_paidAmount(self, obj):
         return int(round(float(obj.amount_paid) * 100))

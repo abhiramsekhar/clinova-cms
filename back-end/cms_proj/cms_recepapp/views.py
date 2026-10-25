@@ -9,10 +9,11 @@ ViewSets for Receptionist domain models:
 
 import datetime
 from decimal import Decimal
-from django.db import transaction
+from functools import wraps
+from django.db import transaction, IntegrityError, OperationalError
 from django.db.models import Q, Sum
 from django.utils import timezone
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -31,14 +32,27 @@ from .serializers import (
 )
 from .services import (
     resolve_doctor,
+    receptionist_bills,
     get_slot_board,
     get_next_walkin_slot,
     get_consultation_fee,
     get_registration_fee,
     get_slot_config,
     DEFAULT_CONSULTATION_FEE_PAISE,
-    NO_SHOW_GRACE_MIN,
+    mark_expired_scheduled_appointments,
 )
+
+
+def booking_database_errors(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except IntegrityError:
+            return Response({"detail": "The booking conflicted with another request. Refresh availability and try again.", "code": "BOOKING_CONFLICT"}, status=status.HTTP_409_CONFLICT)
+        except OperationalError:
+            return Response({"detail": "The booking could not be saved. Refresh availability and retry.", "code": "BOOKING_RETRY_REQUIRED"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return wrapped
 
 
 class ReceptionPagination(PageNumberPagination):
@@ -74,9 +88,30 @@ class PatientViewSet(viewsets.ModelViewSet):
         if search:
             q = search.strip()
             qs = qs.filter(
+                Q(patient_id__icontains=q) |
                 Q(name__icontains=q) |
                 Q(mrn__icontains=q) |
                 Q(phone__icontains=q)
+            )
+
+        gender_param = self.request.query_params.get("gender")
+        if gender_param:
+            gender_map = {"male": ["M", "Male"], "female": ["F", "Female"], "other": ["Other"]}
+            qs = qs.filter(gender__in=gender_map.get(gender_param.strip().lower(), [gender_param]))
+
+        registration_filter = self.request.query_params.get("registration", "all").lower()
+        today = timezone.localdate()
+        day_start = timezone.make_aware(datetime.datetime.combine(today, datetime.time.min))
+        day_end = day_start + datetime.timedelta(days=1)
+        if registration_filter == "today":
+            qs = qs.filter(
+                Q(registered_on=today) |
+                (Q(registered_on__isnull=True) & Q(created_at__gte=day_start, created_at__lt=day_end))
+            )
+        elif registration_filter == "previous":
+            qs = qs.filter(
+                Q(registered_on__lt=today) |
+                (Q(registered_on__isnull=True) & Q(created_at__lt=day_start))
             )
 
         # Doctor scope: if doctor or ?doctor_scope=mine
@@ -94,89 +129,67 @@ class PatientViewSet(viewsets.ModelViewSet):
 
         return qs
 
+    def potential_duplicate_matches(self, patient_data):
+        name = str(patient_data.get("name", "")).strip()
+        phone = str(patient_data.get("phone", "")).strip()
+        dob = patient_data.get("dateOfBirth") or patient_data.get("dob")
+        match_query = Q(name__iexact=name, dob=dob) if name and dob else Q(pk__in=[])
+        if phone:
+            match_query |= Q(phone=phone)
+        matches = Patient.objects.filter(is_active=True).filter(match_query).order_by("-created_at")[:5]
+        return [{
+            "id": patient.patient_id,
+            "mrn": patient.mrn,
+            "name": patient.name,
+            "phone": patient.phone,
+            "dateOfBirth": patient.dob.isoformat() if patient.dob else None,
+        } for patient in matches]
+
     @action(detail=False, methods=["post"], url_path="precheck")
     def precheck(self, request):
-        """Validates patient registration details before payment collection."""
+        """Validates patient registration details before saving the record."""
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"valid": True, "message": "Precheck passed."}, status=status.HTTP_200_OK)
+        return Response({
+            "valid": True,
+            "message": "Precheck passed.",
+            "potentialDuplicates": self.potential_duplicate_matches(request.data),
+        }, status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        # Validate dates and types before they are used in duplicate queries.
+        self.get_serializer(data=request.data).is_valid(raise_exception=True)
+        candidates = self.potential_duplicate_matches(request.data)
+        if candidates and request.data.get("confirmPossibleDuplicate") is not True:
+            return Response({
+                "detail": "Possible matching patient records were found. Confirm that this is a new or different patient to continue.",
+                "code": "POSSIBLE_DUPLICATE",
+                "potentialDuplicates": candidates,
+            }, status=status.HTTP_409_CONFLICT)
+        return super().create(request, *args, **kwargs)
 
     @action(detail=False, methods=["post"], url_path="register-and-pay")
     @transaction.atomic
     def register_and_pay(self, request):
         """
-        Registers a patient and creates a PAID registration bill + payment in one transaction.
-        Payload: { patient: { ... }, payment: { method: 'CASH'|'CARD'|'UPI' } }
+        Legacy endpoint retained for older clients. Registration saves the patient only;
+        the one-time registration fee is collected with the first appointment bill.
         """
         patient_data = request.data.get("patient") or request.data
-        payment_data = request.data.get("payment", {})
-        method = payment_data.get("method", "CASH").upper()
-
-        if method not in ["CASH", "CARD", "UPI"]:
-            return Response(
-                {"detail": "Please select a valid payment method (CASH, CARD, UPI).", "code": "VALIDATION_ERROR"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         serializer = self.get_serializer(data=patient_data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        candidates = self.potential_duplicate_matches(patient_data)
+        if candidates and request.data.get("confirmPossibleDuplicate") is not True:
+            return Response({
+                "detail": "Possible matching patient records were found. Confirm that this is a new or different patient to continue.",
+                "code": "POSSIBLE_DUPLICATE",
+                "potentialDuplicates": candidates,
+            }, status=status.HTTP_409_CONFLICT)
 
         patient = serializer.save()
-        staff = getattr(request.user, "staff", None)
-
-        reg_fee_paise = get_registration_fee()
-        reg_fee_decimal = Decimal(reg_fee_paise) / Decimal("100")
-
-        # Next readable bill ID
-        existing_bills = Bill.objects.filter(bill_id__startswith="bill-").values_list("bill_id", flat=True)
-        max_bnum = 0
-        for bid in existing_bills:
-            try:
-                num = int(bid.split("-")[1])
-                if num > max_bnum:
-                    max_bnum = num
-            except Exception:
-                pass
-        bill_id = f"bill-{str(max_bnum + 1).zfill(3)}"
-
-        bill = Bill.objects.create(
-            bill_id=bill_id,
-            patient=patient,
-            bill_date=datetime.date.today(),
-            total_amount=reg_fee_decimal,
-            amount_paid=Decimal("0.00"),
-            payment_status=Bill.PaymentStatus.UNPAID,
-            generated_by=staff,
-        )
-
-        BillItem.objects.create(
-            bill_item_id=f"{bill_id}-item-1",
-            bill=bill,
-            item_type=BillItem.ItemType.REGISTRATION,
-            source_id=patient.patient_id,
-            description="Registration fee",
-            amount=reg_fee_decimal,
-        )
-
-        Payment.objects.create(
-            bill=bill,
-            amount_paid=reg_fee_decimal,
-            payment_date=datetime.date.today(),
-            payment_method=method,
-            received_by=staff,
-            transaction_ref=payment_data.get("transactionRef"),
-        )
-        bill.refresh_from_db()
-
-        return Response(
-            {
-                "patient": PatientSerializer(patient).data,
-                "bill": BillSerializer(bill).data,
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        return Response({"patient": PatientSerializer(patient).data}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["get"], url_path="clinical-history")
     def clinical_history(self, request, pk=None):
@@ -215,11 +228,75 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     pagination_class = ReceptionPagination
 
     def get_permissions(self):
+        if self.action in ["print_token", "undo_no_show"]:
+            return [IsRole("ADMIN", "RECEPTIONIST")()]
         return [IsRole("ADMIN", "DOCTOR", "RECEPTIONIST")()]
+
+    def registration_fee_due(self, patient):
+        """Charge registration only until a positive registration payment exists or a paid visit is completed."""
+        registration_paid = Bill.objects.filter(
+            patient=patient,
+            items__item_type=BillItem.ItemType.REGISTRATION,
+            payments__amount_paid__gt=0,
+        ).exists()
+        if registration_paid:
+            return False
+
+        completed_visit = Appointment.objects.filter(
+            patient=patient,
+            status=Appointment.Status.COMPLETED,
+        ).exists() or ConsultationRecord.objects.filter(
+            patient=patient,
+            is_completed=True,
+        ).exists()
+        paid_consultation_history = Bill.objects.filter(
+            patient=patient,
+            payment_status=Bill.PaymentStatus.PAID,
+            payments__isnull=False,
+            items__item_type=BillItem.ItemType.CONSULTATION,
+        ).exists()
+        completed_paid_consultation = completed_visit and paid_consultation_history
+        return not completed_paid_consultation
+
+    @action(detail=False, methods=["get"], url_path="booking-quote")
+    def booking_quote(self, request):
+        patient_id = request.query_params.get("patient") or request.query_params.get("patientId")
+        doctor_id = request.query_params.get("doctor") or request.query_params.get("doctorId")
+        patient = Patient.objects.filter(pk=patient_id, is_active=True).first() if patient_id else None
+        doctor = resolve_doctor(doctor_id) if doctor_id else None
+        if not patient or not doctor or not doctor.staff.is_active:
+            return Response({"detail": "Select an active patient and doctor.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+
+        consultation = get_consultation_fee(doctor_id)
+        registration = get_registration_fee() if self.registration_fee_due(patient) else 0
+        return Response({
+            "patientId": patient.patient_id,
+            "doctorId": doctor.staff.staff_id,
+            "registrationFee": registration,
+            "consultationFee": consultation,
+            "total": registration + consultation,
+            "registrationFeeDue": registration > 0,
+        }, status=status.HTTP_200_OK)
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        return super().create(request, *args, **kwargs)
+        return Response(
+            {"detail": "Appointments must be created through book-and-pay so payment and token issuance remain atomic.", "code": "PAYMENT_REQUIRED"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def update(self, request, *args, **kwargs):
+        if set(request.data) - {"reason", "notes", "type"}:
+            return Response({"detail": "Use the appointment workflow actions to change a booking.", "code": "INVALID_STATE"}, status=status.HTTP_400_BAD_REQUEST)
+        kwargs["partial"] = True
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Appointment history cannot be deleted. Use cancellation.", "code": "INVALID_STATE"}, status=status.HTTP_400_BAD_REQUEST)
+
+    def list(self, request, *args, **kwargs):
+        mark_expired_scheduled_appointments(request=request)
+        return super().list(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = Appointment.objects.select_related(
@@ -230,6 +307,19 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         date_param = self.request.query_params.get("date")
         if date_param:
             qs = qs.filter(appointment_date=date_param)
+        if self.request.query_params.get("exclude_today") == "true":
+            qs = qs.exclude(appointment_date=timezone.localdate())
+
+        # Booking date is distinct from the date the appointment is scheduled.
+        booked_date = self.request.query_params.get("booked_date")
+        if booked_date:
+            try:
+                booking_day = datetime.date.fromisoformat(booked_date)
+            except ValueError:
+                raise serializers.ValidationError({"booked_date": "Enter a valid date (YYYY-MM-DD)."})
+            start = timezone.make_aware(datetime.datetime.combine(booking_day, datetime.time.min))
+            end = timezone.make_aware(datetime.datetime.combine(booking_day + datetime.timedelta(days=1), datetime.time.min))
+            qs = qs.filter(created_at__gte=start, created_at__lt=end)
 
         # Filter: doctor
         doctor_param = self.request.query_params.get("doctor") or self.request.query_params.get("doctorId")
@@ -256,15 +346,26 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             statuses = [s.strip() for s in status_param.split(",") if s.strip()]
             qs = qs.filter(status__in=statuses)
 
-        # Search by patient name, mrn, doctor name
+        # Search by patient name, database ID/MRN, or doctor name.
         search = self.request.query_params.get("search")
         if search:
             q = search.strip()
-            qs = qs.filter(
+            search_filter = (
                 Q(patient__name__icontains=q) |
+                Q(patient__patient_id__icontains=q) |
                 Q(patient__mrn__icontains=q) |
+                Q(patient__phone__icontains=q) |
                 Q(doctor__staff__name__icontains=q)
             )
+            token = q.removeprefix("#")
+            if token.isascii() and token.isdigit() and len(token) <= 9:
+                search_filter |= Q(token_number=int(token))
+            qs = qs.filter(search_filter)
+
+        if search and not date_param and not booked_date:
+            qs = qs.order_by("-appointment_date", "-time_slot", "-created_at")
+        elif booked_date and not date_param:
+            qs = qs.order_by("-created_at", "appointment_date", "time_slot")
 
         return qs
 
@@ -272,12 +373,32 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     def slot_board(self, request):
         """Returns slot states (free, booked, past) for doctor on date."""
         doc_ident = request.query_params.get("doctor") or request.query_params.get("doctorId")
-        date_str = request.query_params.get("date") or datetime.date.today().strftime("%Y-%m-%d")
+        date_str = request.query_params.get("date") or timezone.localdate().isoformat()
         if not doc_ident:
             return Response({"detail": "Doctor is required.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
         board = get_slot_board(doc_ident, date_str)
         return Response(board, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="doctor-availability")
+    def doctor_availability(self, request):
+        """Summarize slot availability for active doctors on a selected date."""
+        date_str = request.query_params.get("date") or timezone.localdate().isoformat()
+        doctors = Doctor.objects.filter(staff__is_active=True).select_related("staff", "department")
+        results = []
+        for doctor in doctors:
+            slots = get_slot_board(doctor.staff.staff_id, date_str)
+            free_slots = sum(1 for slot in slots if slot["state"] == "free")
+            results.append({
+                "doctorId": doctor.doctor_id,
+                "staffId": doctor.staff.staff_id,
+                "doctorName": doctor.staff.name,
+                "department": doctor.department.name if doctor.department else None,
+                "available": free_slots > 0,
+                "status": "AVAILABLE" if free_slots else "UNAVAILABLE",
+                "freeSlots": free_slots,
+            })
+        return Response(results, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["get"], url_path="next-walkin-slot")
     def next_walkin_slot(self, request):
@@ -305,6 +426,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return Response({"doctorId": doc_ident, "fee": fee}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="book-and-pay")
+    @booking_database_errors
     @transaction.atomic
     def book_and_pay(self, request):
         """
@@ -313,39 +435,107 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         data = request.data
         patient_id = data.get("patientId")
         doc_ident = data.get("doctorId")
-        payment_info = data.get("payment", {})
-        method = payment_info.get("method", "CASH").upper()
+        payment_info = data.get("payment") or {}
+        if not isinstance(payment_info, dict):
+            return Response({"detail": "Invalid payment details.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+        method = str(payment_info.get("method", "CASH")).upper()
+
+        if payment_info.get("confirmed") is not True:
+            return Response({"detail": "Payment must be explicitly confirmed before booking.", "code": "PAYMENT_NOT_CONFIRMED"}, status=status.HTTP_400_BAD_REQUEST)
+        if method not in ["CASH", "CARD", "UPI"]:
+            return Response({"detail": "Please select a valid payment method (CASH, CARD, UPI).", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
         if not patient_id or not doc_ident:
             return Response({"detail": "Patient and doctor are required.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
-        patient = Patient.objects.filter(pk=patient_id).first()
+        patient = Patient.objects.select_for_update().filter(pk=patient_id).first()
         if not patient or not patient.is_active:
             return Response({"detail": "Invalid or inactive patient.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
         doctor = resolve_doctor(doc_ident)
         if not doctor or not doctor.staff.is_active:
             return Response({"detail": "Selected doctor is not available.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+        # Serialize booking attempts for this doctor so concurrent requests cannot
+        # both pass the slot check before either one writes its appointment.
+        doctor = Doctor.objects.select_for_update().select_related("staff", "department").get(pk=doctor.pk)
 
-        mode = data.get("mode", "PRIOR")
-        now = datetime.datetime.now()
-        today_str = now.strftime("%Y-%m-%d")
+        dept = doctor.department or doctor.staff.department
+        if not doctor.staff.is_active or not dept or not dept.is_active or not dept.is_bookable:
+            return Response({"detail": "The selected doctor or department is not available for booking.", "code": "DOCTOR_UNAVAILABLE"}, status=status.HTTP_400_BAD_REQUEST)
+        department_id = data.get("departmentId")
+        if department_id and department_id != dept.pk:
+            return Response({"detail": "The doctor does not belong to the selected department.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+
+        consultation_paise = get_consultation_fee(doc_ident)
+        registration_paise = get_registration_fee() if self.registration_fee_due(patient) else 0
+        total_paise = consultation_paise + registration_paise
+        if data.get("expectedTotal") is not None:
+            try:
+                expected_total = int(data["expectedTotal"])
+            except (TypeError, ValueError):
+                return Response({"detail": "The quoted total is invalid.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            if expected_total != total_paise:
+                return Response({"detail": "The bill changed since it was displayed. Review the updated fees before confirming payment.", "code": "QUOTE_CHANGED"}, status=status.HTTP_409_CONFLICT)
+
+        mode = str(data.get("mode", "PRIOR")).upper()
+        now = timezone.localtime()
+        today = now.date()
+        today_str = today.isoformat()
 
         if mode == "WALK_IN":
+            requested_date = data.get("date")
+            if requested_date and requested_date != today_str:
+                return Response({"detail": "Walk-in appointments are only available for today.", "code": "INVALID_APPOINTMENT_DATE"}, status=status.HTTP_400_BAD_REQUEST)
             date_val = today_str
-            slot = get_next_walkin_slot(doc_ident, now=now)
-            if not slot:
-                return Response({"detail": "No free slot available today for this doctor.", "code": "NO_SLOT_AVAILABLE"}, status=status.HTTP_400_BAD_REQUEST)
-            time_val = slot["time"]
-            token_num = slot["token"]
-            appt_status = Appointment.Status.CHECKED_IN
-        else:
+            same_doctor_day = Appointment.objects.select_for_update().filter(
+                patient=patient, doctor=doctor, appointment_date=date_val,
+            ).exclude(status=Appointment.Status.CANCELLED).exists()
+            if same_doctor_day:
+                return Response({
+                    "detail": "This patient already has an appointment with this doctor on the selected date.",
+                    "code": "DUPLICATE_DOCTOR_DAY",
+                }, status=status.HTTP_409_CONFLICT)
+            time_val = data.get("time")
+            if not time_val:
+                return Response({"detail": "Select an available walk-in slot for today.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            # Recompute the earliest slot while holding the doctor lock. Never
+            # silently move a confirmed booking to a different time.
+            slot_info = get_next_walkin_slot(doc_ident, now=now)
+            if not slot_info:
+                return Response({"detail": "No walk-in slots available for today. Please choose another available doctor.", "code": "SLOT_UNAVAILABLE"}, status=status.HTTP_400_BAD_REQUEST)
+            if slot_info["time"] != time_val:
+                return Response({"detail": "The next available walk-in slot has changed. Review the updated time before confirming payment.", "code": "SLOT_UNAVAILABLE"}, status=status.HTTP_400_BAD_REQUEST)
+            token_num = slot_info["token"]
+            if data.get("arrivalConfirmed") is not True:
+                return Response({"detail": "Confirm the patient's physical arrival before booking a walk-in.", "code": "ARRIVAL_NOT_CONFIRMED"}, status=status.HTTP_400_BAD_REQUEST)
+            # Check-in is saved only after successful payment below.
+            appt_status = Appointment.Status.SCHEDULED
+        elif mode == "PRIOR":
             date_val = data.get("date")
             time_val = data.get("time")
             if not date_val or not time_val:
                 return Response({"detail": "Date and time are required for prior bookings.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
-            if date_val < today_str:
-                return Response({"detail": "Cannot book a date in the past.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                appointment_date = datetime.date.fromisoformat(date_val)
+            except (TypeError, ValueError):
+                return Response({"detail": "Choose a valid appointment date.", "code": "INVALID_APPOINTMENT_DATE"}, status=status.HTTP_400_BAD_REQUEST)
+            earliest_prior = today + datetime.timedelta(days=1)
+            latest_prior = today + datetime.timedelta(days=28)
+            if not earliest_prior <= appointment_date <= latest_prior:
+                return Response({
+                    "detail": "Prior bookings must be scheduled from tomorrow through the next 28 days.",
+                    "code": "INVALID_APPOINTMENT_DATE",
+                }, status=status.HTTP_400_BAD_REQUEST)
+            date_val = appointment_date.isoformat()
+
+            same_doctor_day = Appointment.objects.select_for_update().filter(
+                patient=patient, doctor=doctor, appointment_date=date_val,
+            ).exclude(status=Appointment.Status.CANCELLED).exists()
+            if same_doctor_day:
+                return Response({
+                    "detail": "This patient already has an appointment with this doctor on the selected date.",
+                    "code": "DUPLICATE_DOCTOR_DAY",
+                }, status=status.HTTP_409_CONFLICT)
 
             # Check if already booked
             is_booked = Appointment.objects.select_for_update().filter(
@@ -364,82 +554,79 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
             board = get_slot_board(doc_ident, date_val, now=now)
             slot_info = next((s for s in board if s["time"] == time_val), None)
-            token_num = slot_info["token"] if slot_info else 1
+            if not slot_info or slot_info["state"] != "free":
+                return Response({"detail": "The selected appointment slot is unavailable.", "code": "SLOT_UNAVAILABLE"}, status=status.HTTP_400_BAD_REQUEST)
+            token_num = slot_info["token"]
             appt_status = Appointment.Status.SCHEDULED
-
-        # Appointment ID
-        existing_appts = Appointment.objects.filter(appointment_id__startswith="appt-").values_list("appointment_id", flat=True)
-        max_anum = 0
-        for aid in existing_appts:
-            try:
-                num = int(aid.split("-")[1])
-                if num > max_anum:
-                    max_anum = num
-            except Exception:
-                pass
-        appt_id = f"appt-{str(max_anum + 1).zfill(3)}"
+        else:
+            return Response({"detail": "Choose Walk-in or Prior Booking.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
         dept = doctor.department or doctor.staff.department
         staff = getattr(request.user, "staff", None)
 
         appointment = Appointment.objects.create(
-            appointment_id=appt_id,
             patient=patient,
             doctor=doctor,
             department=dept,
             appointment_date=date_val,
             time_slot=time_val,
+            booking_mode=mode,
             appointment_type=data.get("type", "New Visit"),
             status=appt_status,
             reason=data.get("reason"),
-            token_number=token_num,
+            token_number=None,
             created_by=staff,
         )
 
-        fee_paise = get_consultation_fee(doc_ident)
-        fee_decimal = Decimal(fee_paise) / Decimal("100")
-
-        # Bill ID
-        existing_bills = Bill.objects.filter(bill_id__startswith="bill-").values_list("bill_id", flat=True)
-        max_bnum = 0
-        for bid in existing_bills:
-            try:
-                num = int(bid.split("-")[1])
-                if num > max_bnum:
-                    max_bnum = num
-            except Exception:
-                pass
-        bill_id = f"bill-{str(max_bnum + 1).zfill(3)}"
+        total_decimal = Decimal(total_paise) / Decimal("100")
 
         bill = Bill.objects.create(
-            bill_id=bill_id,
             patient=patient,
             appointment=appointment,
-            bill_date=datetime.date.today(),
-            total_amount=fee_decimal,
+            bill_date=timezone.localdate(),
+            total_amount=total_decimal,
             amount_paid=Decimal("0.00"),
             payment_status=Bill.PaymentStatus.UNPAID,
             generated_by=staff,
         )
 
+        appt_id = appointment.pk
+        bill_id = bill.pk
+        item_number = 1
+        if registration_paise:
+            BillItem.objects.create(
+                bill_item_id=f"{bill_id}-item-{item_number}", bill=bill,
+                item_type=BillItem.ItemType.REGISTRATION, source_id=patient.patient_id,
+                description="One-time patient registration fee",
+                amount=Decimal(registration_paise) / Decimal("100"),
+            )
+            item_number += 1
         BillItem.objects.create(
-            bill_item_id=f"{bill_id}-item-1",
-            bill=bill,
-            item_type=BillItem.ItemType.CONSULTATION,
-            source_id=appt_id,
+            bill_item_id=f"{bill_id}-item-{item_number}", bill=bill,
+            item_type=BillItem.ItemType.CONSULTATION, source_id=appt_id,
             description=f"Consultation — {appointment.appointment_type} ({doctor.staff.name})",
-            amount=fee_decimal,
+            amount=Decimal(consultation_paise) / Decimal("100"),
         )
 
         Payment.objects.create(
             bill=bill,
-            amount_paid=fee_decimal,
-            payment_date=datetime.date.today(),
+            amount_paid=total_decimal,
+            payment_date=timezone.localdate(),
             payment_method=method,
             received_by=staff,
             transaction_ref=payment_info.get("transactionRef"),
         )
         bill.refresh_from_db()
+
+        bill.refresh_from_db()
+        if bill.payment_status != Bill.PaymentStatus.PAID:
+            raise serializers.ValidationError({"detail": "Payment was not saved in full. The booking has been rolled back.", "code": "PAYMENT_FAILED"})
+
+        # Only assign and release the queue token after the payment record was saved.
+        appointment.token_number = token_num
+        if mode == "WALK_IN":
+            appointment.status = Appointment.Status.CHECKED_IN
+        appointment.save(update_fields=["token_number", "status", "updated_at"])
 
         return Response(
             {
@@ -449,11 +636,60 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    def validate_prior_arrival(self, appt):
+        """Validate an existing paid reservation without allocating or charging."""
+        if appt.booking_mode != Appointment.BookingMode.PRIOR:
+            raise serializers.ValidationError({"detail": "This action is only for prior bookings.", "code": "INVALID_STATE"})
+        if appt.appointment_date != timezone.localdate():
+            raise serializers.ValidationError({"detail": "This action is only available on the appointment date.", "code": "INVALID_APPOINTMENT_DATE"})
+        if not appt.token_number or appt.token_number < 1:
+            raise serializers.ValidationError({"detail": "This appointment has no valid saved token. Review the record.", "code": "TOKEN_REQUIRED"})
+        if not appt.patient.is_active or not appt.doctor.staff.is_active:
+            raise serializers.ValidationError({"detail": "The patient or doctor is inactive. Review the appointment.", "code": "INVALID_STATE"})
+        conflicts = Appointment.objects.filter(
+            doctor_id=appt.doctor_id, appointment_date=appt.appointment_date,
+            status__in=[Appointment.Status.SCHEDULED, Appointment.Status.CHECKED_IN, Appointment.Status.IN_PROGRESS],
+        ).exclude(pk=appt.pk).filter(Q(token_number=appt.token_number) | Q(time_slot=appt.time_slot))
+        if conflicts.exists():
+            raise serializers.ValidationError({"detail": "Another active appointment conflicts with this reservation. Review before proceeding.", "code": "APPOINTMENT_CONFLICT"})
+        bill = appt.bills.select_for_update().first()
+        if not bill or bill.payment_status != Bill.PaymentStatus.PAID or bill.amount_paid < bill.total_amount:
+            raise serializers.ValidationError({"detail": "The appointment bill must be fully paid.", "code": "PAYMENT_REQUIRED"})
+
+    @action(detail=True, methods=["post"], url_path="print-token")
+    @transaction.atomic
+    def print_token(self, request, pk=None):
+        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
+        if appt.status != Appointment.Status.CHECKED_IN:
+            raise serializers.ValidationError({"detail": "Check in the patient before printing their token.", "code": "INVALID_STATE"})
+        self.validate_prior_arrival(appt)
+        return Response(self.get_serializer(appt).data)
+
+    @action(detail=True, methods=["post"], url_path="undo-no-show")
+    @transaction.atomic
+    def undo_no_show(self, request, pk=None):
+        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
+        if appt.status != Appointment.Status.NO_SHOW:
+            raise serializers.ValidationError({"detail": "Only No-show appointments can be restored.", "code": "INVALID_STATE"})
+        if request.data.get("arrivalConfirmed") is not True:
+            raise serializers.ValidationError({"detail": "Confirm the patient's physical arrival first.", "code": "ARRIVAL_NOT_CONFIRMED"})
+        self.validate_prior_arrival(appt)
+        appt.status = Appointment.Status.SCHEDULED
+        staff = getattr(request.user, "staff", None)
+        actor = staff.name if staff else "Staff"
+        appt.notes = (f"{appt.notes}\n" if appt.notes else "") + f"No-show undone by {actor}: late arrival confirmed; awaiting manual check-in"
+        appt.save(update_fields=["status", "notes", "updated_at"])
+        log_audit(action="UNDO_NO_SHOW_APPOINTMENT", entity_type="APPOINTMENT", entity_id=appt.pk,
+                  details={"appointmentDate": appt.appointment_date.isoformat(), "arrivalConfirmed": True, "previousStatus": "NO_SHOW", "status": "SCHEDULED"}, request=request)
+        return Response(self.get_serializer(appt).data)
+
     @action(detail=True, methods=["post"], url_path="check-in")
+    @transaction.atomic
     def check_in(self, request, pk=None):
         """Checks in an appointment if same day and fee paid."""
-        appt = self.get_object()
-        today = datetime.date.today()
+        mark_expired_scheduled_appointments(request=request)
+        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
+        today = timezone.localdate()
 
         if appt.status != Appointment.Status.SCHEDULED:
             return Response(
@@ -467,10 +703,13 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if appt.booking_mode == Appointment.BookingMode.PRIOR:
+            self.validate_prior_arrival(appt)
+
         bill = appt.bills.first()
-        if bill and bill.payment_status != Bill.PaymentStatus.PAID:
+        if not bill or bill.payment_status != Bill.PaymentStatus.PAID:
             return Response(
-                {"detail": "Consultation fee is unpaid. Collect payment before check-in.", "code": "PAYMENT_REQUIRED"},
+                {"detail": "The appointment bill must be fully paid before check-in.", "code": "PAYMENT_REQUIRED"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -481,12 +720,20 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="cancel")
     @transaction.atomic
     def cancel(self, request, pk=None):
-        """Cancels an appointment and handles bill cancellation/refund."""
-        appt = self.get_object()
-        reason = request.data.get("reason", "Cancelled by user")
-        refund = request.data.get("refund", True)
+        """Cancels an appointment without refunding any payments."""
+        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response(
+                {"detail": "A cancellation reason is required.", "code": "VALIDATION_ERROR"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        if appt.status in ["COMPLETED", "IN_PROGRESS", "CANCELLED", "NO_SHOW"]:
+        can_cancel_no_show = (
+            appt.booking_mode == Appointment.BookingMode.PRIOR
+            and appt.status == Appointment.Status.NO_SHOW
+        )
+        if appt.status != Appointment.Status.SCHEDULED and not can_cancel_no_show:
             return Response(
                 {"detail": f"Cannot cancel an appointment with status {appt.status}.", "code": "INVALID_STATE"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -502,15 +749,6 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
         bill = appt.bills.first()
         if bill and bill.payment_status != Bill.PaymentStatus.CANCELLED:
-            if bill.amount_paid > 0 and refund:
-                Payment.objects.create(
-                    bill=bill,
-                    amount_paid=-bill.amount_paid,
-                    payment_date=datetime.date.today(),
-                    payment_method=Payment.Method.OTHER,
-                    transaction_ref="REFUND",
-                    received_by=staff,
-                )
             bill.payment_status = Bill.PaymentStatus.CANCELLED
             bill.save(update_fields=["payment_status", "updated_at"])
 
@@ -518,41 +756,25 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             action="CANCEL_APPOINTMENT",
             entity_type="APPOINTMENT",
             entity_id=appt.appointment_id,
-            details={"reason": reason, "refund": refund},
+            details={"reason": reason, "refund": False},
             request=request,
         )
 
         return Response(self.get_serializer(appt).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="no-show")
+    @transaction.atomic
     def no_show(self, request, pk=None):
         """Marks appointment as NO_SHOW."""
-        appt = self.get_object()
+        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
         if appt.status != Appointment.Status.SCHEDULED:
             return Response(
                 {"detail": f"Only SCHEDULED appointments can be marked as no-show (current: {appt.status}).", "code": "INVALID_STATE"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            scheduled_time = datetime.time.fromisoformat(str(appt.time_slot))
-        except ValueError:
-            return Response(
-                {"detail": "The appointment time is invalid; it cannot be marked as no-show.", "code": "INVALID_APPOINTMENT_TIME"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        scheduled_at = datetime.datetime.combine(appt.appointment_date, scheduled_time)
-        scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
-        grace_ends_at = scheduled_at + datetime.timedelta(minutes=NO_SHOW_GRACE_MIN)
-        if timezone.localtime() < grace_ends_at:
-            return Response(
-                {
-                    "detail": f"An appointment can be marked as no-show {NO_SHOW_GRACE_MIN} minutes after its scheduled time.",
-                    "code": "NO_SHOW_GRACE_PERIOD",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if appt.appointment_date > timezone.localdate():
+            return Response({"detail": "Future appointments cannot be marked as no-show.", "code": "INVALID_STATE"}, status=status.HTTP_400_BAD_REQUEST)
 
         staff = getattr(request.user, "staff", None)
         marked_by_name = staff.name if staff else "Staff"
@@ -573,13 +795,24 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(appt).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="update-status")
+    @transaction.atomic
     def update_status(self, request, pk=None):
-        """Updates appointment status."""
-        appt = self.get_object()
+        """Supports only forward clinical transitions; check-in/no-show/cancel use guarded actions."""
+        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
         new_status = request.data.get("status")
         if not new_status or new_status not in Appointment.Status.values:
             return Response(
                 {"detail": f"Invalid status '{new_status}'.", "code": "VALIDATION_ERROR"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        allowed_transitions = {
+            Appointment.Status.IN_PROGRESS: {Appointment.Status.CHECKED_IN},
+            Appointment.Status.COMPLETED: {Appointment.Status.IN_PROGRESS},
+        }
+        if appt.status not in allowed_transitions.get(new_status, set()):
+            return Response(
+                {"detail": "Use the guarded check-in, no-show, or cancellation action for this status change.", "code": "INVALID_STATE"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -605,9 +838,15 @@ class BillViewSet(viewsets.ModelViewSet):
         return [IsRole("ADMIN", "RECEPTIONIST")()]
 
     def get_queryset(self):
-        qs = Bill.objects.select_related("patient", "appointment", "generated_by").prefetch_related(
+        qs = Bill.objects.select_related(
+            "patient", "appointment", "appointment__doctor__staff",
+            "appointment__doctor__department", "appointment__department", "generated_by",
+        ).prefetch_related(
             "items", "payments", "payments__received_by"
         ).all().order_by("-created_at")
+
+        if getattr(getattr(self.request.user, "role", None), "role_id", None) == "RECEPTIONIST":
+            qs = receptionist_bills(qs)
 
         patient_param = self.request.query_params.get("patient") or self.request.query_params.get("patientId")
         if patient_param:
@@ -616,6 +855,21 @@ class BillViewSet(viewsets.ModelViewSet):
         status_param = self.request.query_params.get("status")
         if status_param:
             qs = qs.filter(payment_status=status_param)
+
+        created_date = self.request.query_params.get("created_date")
+        if created_date:
+            try:
+                bill_day = datetime.date.fromisoformat(created_date)
+            except ValueError:
+                raise serializers.ValidationError({"created_date": "Enter a valid date (YYYY-MM-DD)."})
+            start = timezone.make_aware(datetime.datetime.combine(bill_day, datetime.time.min))
+            end = timezone.make_aware(datetime.datetime.combine(bill_day + datetime.timedelta(days=1), datetime.time.min))
+            qs = qs.filter(created_at__gte=start, created_at__lt=end)
+
+        # Retain the bill_date filter for existing billing clients.
+        bill_date = self.request.query_params.get("bill_date")
+        if bill_date:
+            qs = qs.filter(bill_date=bill_date)
 
         search = self.request.query_params.get("search")
         if search:
@@ -627,6 +881,27 @@ class BillViewSet(viewsets.ModelViewSet):
             )
 
         return qs
+
+    def list(self, request, *args, **kwargs):
+        qs = self.filter_queryset(self.get_queryset())
+        role = getattr(getattr(request.user, "role", None), "role_id", None)
+        if role == "RECEPTIONIST":
+            qs = qs.filter(payment_status=Bill.PaymentStatus.PAID)
+
+        appointment_date = request.query_params.get("appointment_date")
+        booked_date = request.query_params.get("booked_date")
+        paid_date = request.query_params.get("paid_date")
+        if appointment_date:
+            qs = qs.filter(appointment__appointment_date=appointment_date)
+        if booked_date:
+            qs = qs.filter(appointment__created_at__date=booked_date)
+        if paid_date:
+            qs = qs.filter(payments__payment_date=paid_date).distinct()
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        return Response(self.get_serializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="receive-payment")
     @transaction.atomic
@@ -657,6 +932,11 @@ class BillViewSet(viewsets.ModelViewSet):
 
         amount_decimal = Decimal(amount_paise) / Decimal("100")
         balance = bill.balance_due
+        if bill.appointment_id and amount_decimal != balance:
+            return Response(
+                {"detail": "Appointment bills must be paid in full before the appointment can be confirmed.", "code": "FULL_PAYMENT_REQUIRED"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if amount_decimal > balance:
             bal_paise = int(round(float(balance) * 100))
             return Response(
@@ -702,7 +982,7 @@ class BillViewSet(viewsets.ModelViewSet):
         Payment.objects.create(
             bill=bill,
             amount_paid=amount_decimal,
-            payment_date=datetime.date.today(),
+            payment_date=timezone.localdate(),
             payment_method=method,
             transaction_ref=transaction_ref,
             received_by=staff,
@@ -738,7 +1018,7 @@ class BillViewSet(viewsets.ModelViewSet):
             Payment.objects.create(
                 bill=bill,
                 amount_paid=-bill.amount_paid,
-                payment_date=datetime.date.today(),
+                payment_date=timezone.localdate(),
                 payment_method=Payment.Method.OTHER,
                 transaction_ref=f"REFUND: {reason}",
                 received_by=staff,
@@ -776,6 +1056,8 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = Payment.objects.select_related("bill", "bill__patient", "received_by").all().order_by("-created_at")
+        if getattr(getattr(self.request.user, "role", None), "role_id", None) == "RECEPTIONIST":
+            qs = qs.filter(bill_id__in=receptionist_bills(Bill.objects.all()).values("pk"))
         bill_param = self.request.query_params.get("bill") or self.request.query_params.get("billId")
         if bill_param:
             qs = qs.filter(bill__bill_id=bill_param)

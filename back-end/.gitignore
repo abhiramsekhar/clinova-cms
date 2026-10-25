@@ -5,6 +5,7 @@ cms_venv/
 venv/
 env/
 .venv/
+myvirtualenv
 
 # ---------------------------------------------------------------------
 # Secrets — never commit actual credentials

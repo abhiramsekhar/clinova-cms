@@ -358,17 +358,17 @@ class DashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="reception")
     def reception_dashboard(self, request):
-        from cms_recepapp.models import Appointment, Bill
+        from cms_recepapp.models import Appointment
+        from cms_recepapp.services import mark_expired_scheduled_appointments
 
-        today = datetime.date.today()
+        mark_expired_scheduled_appointments(request=request)
+        today = timezone.localdate()
         today_appts = Appointment.objects.filter(appointment_date=today)
-        unpaid_bills = Bill.objects.filter(payment_status__in=["UNPAID", "PARTIAL"]).count()
 
         return Response({
             "scheduled": today_appts.filter(status="SCHEDULED").count(),
             "checkedIn": today_appts.filter(status="CHECKED_IN").count(),
             "completed": today_appts.filter(status="COMPLETED").count(),
-            "unpaidBills": unpaid_bills,
         }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["get"], url_path="pharmacy")

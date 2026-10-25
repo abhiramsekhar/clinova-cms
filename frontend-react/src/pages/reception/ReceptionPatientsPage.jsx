@@ -1,7 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import apiClient from '../../api/client';
 import { patientsApi } from '../../api/resources';
 import Icon from '../../components/Icon';
 import { Modal, FormField, DataTable, useToast } from '../../components/ui';
@@ -9,6 +8,7 @@ import { ErrorState } from '../../components/States';
 import { Format, formatAge, formatDate } from '../../utils/format';
 import {
   validateName,
+  validatePatientName,
   validatePhone,
   validateDob,
   validateGender,
@@ -39,6 +39,11 @@ function registrationErrorDetails(error) {
   return { message, fieldErrors };
 }
 
+function localDateString(date = new Date()) {
+  const adjusted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return adjusted.toISOString().slice(0, 10);
+}
+
 export function ReceptionPatientsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -49,6 +54,8 @@ export function ReceptionPatientsPage() {
   const [search, setSearch] = useState(initialSearch);
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch.trim());
   const [genderFilter, setGenderFilter] = useState('');
+  const [registrationFilter, setRegistrationFilter] = useState('all');
+  const [page, setPage] = useState(1);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState(1); // 1: Details, 2: Payment, 3: Completed
 
@@ -70,9 +77,12 @@ export function ReceptionPatientsPage() {
   const [registrationError, setRegistrationError] = useState('');
   const [pendingPatientData, setPendingPatientData] = useState(null);
   const [registeredPatient, setRegisteredPatient] = useState(null);
+  const [potentialDuplicates, setPotentialDuplicates] = useState([]);
+  const [duplicateAcknowledged, setDuplicateAcknowledged] = useState(false);
 
   useEffect(() => {
     setSearch(searchParams.get('search') || '');
+    setPage(1);
   }, [searchParams]);
 
   useEffect(() => {
@@ -81,37 +91,20 @@ export function ReceptionPatientsPage() {
   }, [search]);
 
   // Fetch Patients
-  const { data: patientsData, isLoading, error, refetch } = useQuery({
-    queryKey: ['patientsList', debouncedSearch],
+  const { data: patientsResponse, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ['patientsList', registrationFilter, debouncedSearch, genderFilter, page],
     queryFn: async () => {
-      const params = { page_size: 200 };
+      const params = { page_size: 20, page, registration: registrationFilter };
       if (debouncedSearch) params.search = debouncedSearch;
+      if (genderFilter) params.gender = genderFilter;
       const res = await patientsApi.list(params);
-      return Array.isArray(res) ? res : (res?.results || []);
+      return res.data || res;
     },
   });
 
-  const patientsList = Array.isArray(patientsData) ? patientsData : [];
-
-  // Filtered Patients
-  const filteredPatients = useMemo(() => {
-    let result = patientsList;
-    if (search.trim()) {
-      const q = search.toLowerCase().trim();
-      result = result.filter(
-        (p) =>
-          (p.name && p.name.toLowerCase().includes(q)) ||
-          (p.mrn && p.mrn.toLowerCase().includes(q)) ||
-          (p.phone && p.phone.toLowerCase().includes(q))
-      );
-    }
-    if (genderFilter) {
-      result = result.filter(
-        (p) => p.gender && p.gender.toLowerCase() === genderFilter.toLowerCase()
-      );
-    }
-    return result;
-  }, [patientsList, search, genderFilter]);
+  const patientsList = Array.isArray(patientsResponse) ? patientsResponse : (patientsResponse?.results || []);
+  const patientCount = Array.isArray(patientsResponse) ? patientsResponse.length : (patientsResponse?.count || 0);
+  const pageCount = Math.max(1, Math.ceil(patientCount / 20));
 
   // Minor check
   const isMinor = formData.dateOfBirth && ageFromDob(formData.dateOfBirth) < 18;
@@ -119,10 +112,10 @@ export function ReceptionPatientsPage() {
   // Handle Input Changes with auto-stripping
   const handleInputChange = (field, value) => {
     let cleaned = value;
-    if (field === 'name' || field === 'guardianName') {
+    if (field === 'guardianName') {
       cleaned = value.replace(/[^\p{L}\p{M}\s.'’-]/gu, '');
-    } else if (field === 'phone' || field === 'guardianPhone') {
-      cleaned = value.replace(/[^\d+\s()-]/g, '');
+    } else if (field === 'guardianPhone') {
+      cleaned = value.replace(/\D/g, '').slice(0, 10);
     }
     setFormData((prev) => ({ ...prev, [field]: cleaned }));
     setRegistrationError('');
@@ -134,7 +127,7 @@ export function ReceptionPatientsPage() {
   // Blur validation
   const handleBlur = (field) => {
     let err = '';
-    if (field === 'name') err = validateName(formData.name, 'Full name').error;
+    if (field === 'name') err = validatePatientName(formData.name, 'Full name').error;
     else if (field === 'phone') err = validatePhone(formData.phone).error;
     else if (field === 'dateOfBirth') err = validateDob(formData.dateOfBirth).error;
     else if (field === 'gender') err = validateGender(formData.gender).error;
@@ -149,7 +142,7 @@ export function ReceptionPatientsPage() {
     }
   };
 
-  // Step 1: Validate & proceed to payment
+  // Validate patient details and check for existing records before saving.
   const handleProceedToPayment = (e) => {
     e.preventDefault();
     const result = validatePatientForm({
@@ -176,9 +169,11 @@ export function ReceptionPatientsPage() {
 
   const precheckMutation = useMutation({
     mutationFn: (patient) => patientsApi.precheck(patient),
-    onSuccess: (_data, patient) => {
+    onSuccess: (data, patient) => {
       setRegistrationError('');
       setPendingPatientData(patient);
+      setPotentialDuplicates(data?.potentialDuplicates || []);
+      setDuplicateAcknowledged(false);
       setWizardStep(2);
     },
     onError: (err) => {
@@ -192,26 +187,31 @@ export function ReceptionPatientsPage() {
   // Registration Mutation
   const registerMutation = useMutation({
     mutationFn: async () => {
-      const payload = {
-        patient: pendingPatientData,
-        payment: {
-          method: formData.paymentMethod,
-        },
-      };
-      return await patientsApi.registerAndPay(payload);
+      return await patientsApi.create({
+        ...pendingPatientData,
+        confirmPossibleDuplicate: duplicateAcknowledged,
+      });
     },
     onSuccess: (data) => {
       const createdPatient = data.patient || data;
       setRegistrationError('');
       setRegisteredPatient(createdPatient);
       setWizardStep(3);
+      setRegistrationFilter('today');
+      setPage(1);
+      setSearch('');
+      setDebouncedSearch('');
       queryClient.invalidateQueries({ queryKey: ['patientsList'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
-      toast.success(`Fee collected. ${createdPatient.name} registered successfully!`);
+      toast.success(`${createdPatient.name} registered successfully!`);
     },
     onError: (err) => {
       const { message, fieldErrors } = registrationErrorDetails(err);
+      if (err?.response?.data?.code === 'POSSIBLE_DUPLICATE') {
+        setPotentialDuplicates(err.response.data.potentialDuplicates || []);
+        setDuplicateAcknowledged(false);
+        setRegistrationError(message);
+        return;
+      }
       if (Object.keys(fieldErrors).length) {
         setFormErrors((previous) => ({ ...previous, ...fieldErrors }));
         setWizardStep(1);
@@ -229,6 +229,8 @@ export function ReceptionPatientsPage() {
     setRegistrationError('');
     setPendingPatientData(null);
     setRegisteredPatient(null);
+    setPotentialDuplicates([]);
+    setDuplicateAcknowledged(false);
   };
 
   // Columns for DataTable
@@ -269,23 +271,35 @@ export function ReceptionPatientsPage() {
       key: 'createdAt',
       label: 'Registered On',
       sortable: true,
-      render: (r) => formatDate(r.registeredOn || r.createdAt || r.created_at),
+      render: (r) => formatDate(r.registeredOn || r.registered_on || r.createdAt || r.created_at),
     },
     {
       key: 'actions',
       label: '',
-      width: '90px',
+      width: '170px',
       render: (r) => (
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          onClick={() => navigate({
-            pathname: '/shared/patient-profile',
-            search: new URLSearchParams({ id: String(r.id || r.patient_id) }).toString(),
-          })}
-        >
-          View
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={() => navigate({
+              pathname: '/shared/patient-profile',
+              search: new URLSearchParams({ id: String(r.id || r.patient_id) }).toString(),
+            })}
+          >
+            View
+          </button>
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            onClick={() => navigate({
+              pathname: '/shared/patient-profile',
+              search: new URLSearchParams({ id: String(r.id || r.patient_id), edit: '1' }).toString(),
+            })}
+          >
+            <Icon name="icon-edit" size={14} /> Edit
+          </button>
+        </div>
       ),
     },
   ];
@@ -293,14 +307,14 @@ export function ReceptionPatientsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+      <div className="page-header">
         <div className="page-header__info">
           <h1 className="text-page-title" style={{ margin: '0 0 0.25rem 0' }}>Patient Directory</h1>
           <p className="text-caption" style={{ margin: 0, color: 'var(--muted)' }}>
             Register new patients, issue MRN, and review records
           </p>
         </div>
-        <div className="page-header__actions">
+        <div className="page-header__actions" style={{ marginLeft: 'auto' }}>
           <button
             type="button"
             className="btn btn--primary"
@@ -324,7 +338,7 @@ export function ReceptionPatientsPage() {
               type="text"
               className="search-bar__input"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
               placeholder="Search by patient name, MRN, phone..."
             />
             {search && (
@@ -344,7 +358,7 @@ export function ReceptionPatientsPage() {
           <select
             className="form-input"
             value={genderFilter}
-            onChange={(e) => setGenderFilter(e.target.value)}
+            onChange={(e) => { setGenderFilter(e.target.value); setPage(1); }}
             style={{ width: '140px', padding: '0.5rem 0.75rem' }}
           >
             <option value="">All Genders</option>
@@ -355,6 +369,22 @@ export function ReceptionPatientsPage() {
         </div>
       </div>
 
+      <div className="tabs" role="tablist" aria-label="Patient registration date">
+        {[
+          ['today', "Today's Registered Patients"],
+          ['all', 'All Patients'],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={registrationFilter === value}
+            className={`tabs__item ${registrationFilter === value ? 'is-active' : ''}`}
+            onClick={() => { setRegistrationFilter(value); setPage(1); }}
+          >{label}</button>
+        ))}
+      </div>
+
       {/* Patients DataTable */}
       <div className="glass card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
         {error ? (
@@ -362,10 +392,10 @@ export function ReceptionPatientsPage() {
         ) : (
           <DataTable
             columns={columns}
-            data={filteredPatients}
-            isLoading={isLoading}
+            data={patientsList}
+            isLoading={isLoading || isFetching}
             emptyTitle="No patients found"
-            emptyMessage="No patient records match your search criteria."
+            emptyMessage={debouncedSearch ? 'No patients found for this search.' : 'No patient records are available in this view.'}
             emptyAction={
               <button
                 type="button"
@@ -375,10 +405,18 @@ export function ReceptionPatientsPage() {
                 Register New Patient
               </button>
             }
-            perPage={10}
+            perPage={20}
             defaultSort="createdAt"
+            defaultSortDescending
           />
         )}
+        {patientCount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginTop: '1rem' }}>
+          <span className="text-caption">{patientCount} patient(s) · Page {page} of {pageCount}</span>
+          <div style={{ display: 'flex', gap: '.5rem' }}>
+            <button type="button" className="btn btn--secondary btn--sm" disabled={page <= 1 || isFetching} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</button>
+            <button type="button" className="btn btn--secondary btn--sm" disabled={page >= pageCount || isFetching} onClick={() => setPage((current) => Math.min(pageCount, current + 1))}>Next</button>
+          </div>
+        </div>}
       </div>
 
       {/* Registration Wizard Modal */}
@@ -387,9 +425,9 @@ export function ReceptionPatientsPage() {
         onClose={resetModal}
         title={
           wizardStep === 1
-            ? 'Register New Patient — Step 1 of 2'
+            ? 'Register New Patient'
             : wizardStep === 2
-            ? 'Registration Fee & Payment — Step 2 of 2'
+            ? 'Confirm Patient Registration'
             : 'Registration Complete'
         }
         size={wizardStep === 3 ? 'sm' : 'md'}
@@ -406,7 +444,7 @@ export function ReceptionPatientsPage() {
                   onChange={(e) => handleInputChange('name', e.target.value)}
                   onBlur={() => handleBlur('name')}
                   placeholder="e.g. Ramesh Patel"
-                  maxLength={60}
+                  maxLength={100}
                   required
                 />
               </FormField>
@@ -419,7 +457,8 @@ export function ReceptionPatientsPage() {
                   onChange={(e) => handleInputChange('phone', e.target.value)}
                   onBlur={() => handleBlur('phone')}
                   placeholder="e.g. 9876543210"
-                  maxLength={15}
+                  inputMode="numeric"
+                  pattern="[6-9][0-9]{9}"
                   required
                 />
               </FormField>
@@ -432,7 +471,7 @@ export function ReceptionPatientsPage() {
                   className="form-input"
                   value={formData.dateOfBirth}
                   min={`${MIN_YEAR}-01-01`}
-                  max={new Date().toISOString().split('T')[0]}
+                  max={localDateString()}
                   onChange={(e) => handleInputChange('dateOfBirth', e.target.value)}
                   onBlur={() => handleBlur('dateOfBirth')}
                   required
@@ -463,14 +502,14 @@ export function ReceptionPatientsPage() {
                   onChange={(e) => handleInputChange('bloodGroup', e.target.value)}
                   onBlur={() => handleBlur('bloodGroup')}
                 >
-                  <option value="">Unknown</option>
+                  <option value="">Not provided</option>
                   {BLOOD_GROUPS.map((bg) => (
                     <option key={bg} value={bg}>{bg}</option>
                   ))}
                 </select>
               </FormField>
 
-              <FormField label="Allergies (comma-separated)" error={formErrors.allergies} hint="e.g. Penicillin, Peanuts">
+              <FormField label="Allergies (comma-separated)" error={formErrors.allergies} hint="Leave blank if unknown; use No Known Allergies only when confirmed.">
                 <input
                   type="text"
                   className="form-input"
@@ -479,10 +518,14 @@ export function ReceptionPatientsPage() {
                   onBlur={() => handleBlur('allergies')}
                   placeholder="e.g. Aspirin, Sulfa drugs"
                 />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginTop: '.5rem', color: 'var(--muted)', fontSize: '.85rem' }}>
+                  <input type="checkbox" checked={formData.allergies.trim().toLowerCase() === 'no known allergies'} onChange={(e) => handleInputChange('allergies', e.target.checked ? 'No Known Allergies' : '')} />
+                  No Known Allergies (confirmed)
+                </label>
               </FormField>
             </div>
 
-            <FormField label="Residential Address" error={formErrors.address}>
+            <FormField label="Residential Address" required error={formErrors.address}>
               <textarea
                 className="form-input"
                 rows={2}
@@ -490,7 +533,8 @@ export function ReceptionPatientsPage() {
                 onChange={(e) => handleInputChange('address', e.target.value)}
                 onBlur={() => handleBlur('address')}
                 placeholder="Street address, city, pincode"
-                maxLength={200}
+                maxLength={500}
+                required
               />
             </FormField>
 
@@ -529,6 +573,9 @@ export function ReceptionPatientsPage() {
                       onChange={(e) => handleInputChange('guardianPhone', e.target.value)}
                       onBlur={() => handleBlur('guardianPhone')}
                       placeholder="e.g. 9876543210"
+                      maxLength={10}
+                      inputMode="numeric"
+                      pattern="[6-9][0-9]{9}"
                       required
                     />
                   </FormField>
@@ -540,13 +587,13 @@ export function ReceptionPatientsPage() {
               <button type="button" className="btn btn--secondary" onClick={resetModal}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn--primary" disabled={precheckMutation.isPending}>
+              <button type="submit" className="btn btn--primary" disabled={precheckMutation.isPending || !validatePatientForm(formData).valid}>
                 {precheckMutation.isPending ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <span className="spinner spinner-sm" /> Checking details...
                   </span>
                 ) : (
-                  <><span>Continue to Payment</span><Icon name="icon-arrow-right" size={16} /></>
+                  <><span>Continue</span><Icon name="icon-arrow-right" size={16} /></>
                 )}
               </button>
             </div>
@@ -555,42 +602,15 @@ export function ReceptionPatientsPage() {
 
         {wizardStep === 2 && (
           <div>
-            <p style={{ color: 'var(--muted)', fontSize: '0.9rem', margin: '0 0 1rem 0' }}>
-              Registration fee for <strong>{formData.name}</strong>:
-            </p>
-
-            <div
-              style={{
-                textAlign: 'center',
-                padding: '1.5rem',
-                background: 'rgba(2, 195, 154, 0.08)',
-                borderRadius: '12px',
-                border: '1px solid rgba(2, 195, 154, 0.2)',
-                marginBottom: '1.5rem',
-              }}
-            >
-              <div style={{ fontSize: '0.8125rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                One-Time Registration Fee
-              </div>
-              <div style={{ fontSize: '2.25rem', fontWeight: 800, color: 'var(--text)', margin: '0.25rem 0' }}>
-                ₹200.00
-              </div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--success, #10B981)', fontWeight: 500 }}>
-                Includes Permanent MRN & Digital Records
-              </div>
-            </div>
-
-            <FormField label="Payment Method" required>
-              <select
-                className="form-input"
-                value={formData.paymentMethod}
-                onChange={(e) => handleInputChange('paymentMethod', e.target.value)}
-              >
-                <option value="CASH">Cash</option>
-                <option value="CARD">Card (Debit / Credit)</option>
-                <option value="UPI">UPI (Google Pay, PhonePe, Paytm)</option>
-              </select>
-            </FormField>
+            {potentialDuplicates.length > 0 && <div role="alert" style={{ padding: '1rem', marginBottom: '1rem', border: '1px solid var(--warning, #D97706)', borderRadius: '8px', background: 'rgba(217,119,6,.08)' }}>
+              <strong>Possible existing patient match</strong>
+              <p className="text-caption">Review these records before continuing. Shared names or phone numbers can belong to family members; they are not blocked automatically.</p>
+              {potentialDuplicates.map((candidate) => <div key={candidate.id}>{candidate.name} · {candidate.mrn || candidate.id} · {candidate.phone || 'No phone'} · {candidate.dateOfBirth || 'DOB unavailable'}</div>)}
+              <label style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginTop: '.75rem' }}>
+                <input type="checkbox" checked={duplicateAcknowledged} onChange={(e) => setDuplicateAcknowledged(e.target.checked)} />
+                I checked these records; this is a new or different patient.
+              </label>
+            </div>}
 
             {registrationError && <p role="alert" className="form-error" style={{ color: 'var(--danger)', margin: '1rem 0 0' }}>{registrationError}</p>}
 
@@ -606,15 +626,15 @@ export function ReceptionPatientsPage() {
               <button
                 type="button"
                 className="btn btn--primary"
-                disabled={registerMutation.isPending}
+                disabled={registerMutation.isPending || (potentialDuplicates.length > 0 && !duplicateAcknowledged)}
                 onClick={() => registerMutation.mutate()}
               >
                 {registerMutation.isPending ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span className="spinner spinner-sm" /> Collecting...
+                    <span className="spinner spinner-sm" /> Saving...
                   </span>
                 ) : (
-                  <span>Collect Fee & Register</span>
+                  <span>Register Patient</span>
                 )}
               </button>
             </div>
@@ -643,7 +663,7 @@ export function ReceptionPatientsPage() {
               Registration Complete!
             </h3>
             <p style={{ color: 'var(--muted)', fontSize: '0.9rem', margin: '0 0 1.25rem 0' }}>
-              <strong>{registeredPatient.name}</strong> has been enrolled and fee bill generated.
+              <strong>{registeredPatient.name}</strong> has been registered. The patient record is saved; any registration fee due will be collected with the first appointment.
             </p>
 
             <div
@@ -673,7 +693,7 @@ export function ReceptionPatientsPage() {
                 className="btn btn--secondary"
                 onClick={resetModal}
               >
-                Book Later
+                Back to Patients
               </button>
               <button
                 type="button"

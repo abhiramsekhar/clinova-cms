@@ -369,7 +369,7 @@ class Command(BaseCommand):
             patient = Patient.objects.get(pk=pid)
             doctor = Doctor.objects.get(staff__staff_id=did)
             department = Department.objects.get(pk=dept_id)
-            Appointment.objects.get_or_create(
+            appointment, created = Appointment.objects.get_or_create(
                 appointment_id=appt_id,
                 defaults={
                     "patient": patient,
@@ -383,6 +383,13 @@ class Command(BaseCommand):
                     "reason": reason,
                 },
             )
+            if created and day < 0:
+                # auto_now_add otherwise dates every historical demo booking today.
+                booked_at = timezone.make_aware(
+                    datetime.combine(d(day - 1), time(9, 0)),
+                    timezone.get_current_timezone(),
+                )
+                Appointment.objects.filter(pk=appointment.pk).update(created_at=booked_at)
 
         # 8. CONSULTATIONS (for completed appointments)
         completed_appts = Appointment.objects.filter(status="COMPLETED").order_by("appointment_id")
