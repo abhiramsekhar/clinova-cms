@@ -218,6 +218,268 @@
   min-width: 850px;
 }
 
+.doctor-lab-report {
+  color: var(--doctor-ink);
+}
+
+.doctor-lab-report__brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid var(--doctor-line);
+  color: var(--doctor-accent);
+}
+
+.doctor-lab-report__brand-name,
+.doctor-lab-report__brand-caption {
+  margin: 0;
+}
+
+.doctor-lab-report__brand-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.doctor-lab-report__brand-caption {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.doctor-lab-report__details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1.25rem;
+  margin: 0 0 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--doctor-line);
+  border-radius: 10px;
+  background: #f8fbfb;
+}
+
+.doctor-lab-report-field dt {
+  margin-bottom: 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.doctor-lab-report-field dd {
+  margin: 0;
+  color: var(--doctor-ink);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.doctor-lab-report__results h4,
+.doctor-lab-report__remarks h4 {
+  margin: 0 0 0.7rem;
+  color: var(--doctor-ink);
+  font-size: 0.95rem;
+}
+
+.doctor-lab-results-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--doctor-line);
+  border-radius: 8px;
+}
+
+.doctor-lab-results-table {
+  width: 100%;
+  min-width: 520px;
+  table-layout: auto;
+}
+
+.doctor-lab-results-table th,
+.doctor-lab-results-table td {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.doctor-lab-results-table td:nth-child(2) {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.doctor-lab-result-text,
+.doctor-lab-result-empty,
+.doctor-lab-report__note,
+.doctor-lab-report__loading,
+.doctor-lab-report__remarks p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.doctor-lab-result-text {
+  padding: 1rem;
+  border: 1px solid var(--doctor-line);
+  border-radius: 8px;
+  background: #f8fbfb;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.doctor-lab-result-empty,
+.doctor-lab-report__note,
+.doctor-lab-report__loading {
+  color: var(--muted);
+}
+
+.doctor-lab-report__note,
+.doctor-lab-report__loading {
+  margin-bottom: 0.9rem;
+}
+
+.doctor-lab-report__remarks {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--doctor-line);
+}
+
+.doctor-lab-report-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1.25rem;
+}
+
+@media (max-width: 560px) {
+  .doctor-lab-report__details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 14mm;
+  }
+
+  html,
+  body,
+  #root {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .app,
+  .main,
+  .main__inner,
+  .doctor-workspace {
+    position: static !important;
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .modal-overlay.doctor-lab-report-overlay,
+  .modal-overlay.doctor-lab-report-overlay * {
+    visibility: visible !important;
+  }
+
+  .modal-overlay.doctor-lab-report-overlay {
+    display: flex !important;
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+    z-index: auto !important;
+  }
+
+  .modal-content.doctor-lab-report-modal {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    animation: none !important;
+  }
+
+  .doctor-lab-report-modal > div {
+    flex: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .doctor-lab-report-modal .doctor-lab-report-actions,
+  .doctor-lab-report-modal .btn {
+    display: none !important;
+  }
+
+  .doctor-lab-report,
+  .doctor-lab-report__details {
+    color: #111827 !important;
+    background: #fff !important;
+  }
+
+  .doctor-lab-report__brand {
+    border-color: #334155 !important;
+  }
+
+  .doctor-lab-report__brand-name,
+  .doctor-lab-report__brand-caption,
+  .doctor-lab-report-field dt,
+  .doctor-lab-report-field dd,
+  .doctor-lab-report__results h4,
+  .doctor-lab-report__remarks h4,
+  .doctor-lab-report__remarks p,
+  .doctor-lab-result-empty,
+  .doctor-lab-result-text {
+    color: #111827 !important;
+  }
+
+  .doctor-lab-report__details,
+  .doctor-lab-results-table-wrap,
+  .doctor-lab-result-text {
+    border-color: #9ca3af !important;
+    border-radius: 0 !important;
+  }
+
+  .doctor-lab-results-table-wrap {
+    overflow: visible !important;
+  }
+
+  .doctor-lab-results-table {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: fixed !important;
+    font-size: 9pt !important;
+  }
+
+  .doctor-lab-results-table thead {
+    display: table-header-group;
+  }
+
+  .doctor-lab-results-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .doctor-lab-report__results,
+  .doctor-lab-report__remarks {
+    break-inside: auto;
+  }
+}
+
 .doctor-appointments-table col:nth-child(1) { width: 10%; }
 .doctor-appointments-table col:nth-child(2) { width: 9%; }
 .doctor-appointments-table col:nth-child(3) { width: 27%; }
@@ -313,5 +575,40 @@
     text-align: left;
   }
   .doctor-workspace .data-table td::before { content: none; }
+}
+
+.doctor-prescription-item {
+  border: 1px solid var(--doctor-line);
+  border-radius: 12px;
+  padding: 1rem;
+  margin: 1rem 0;
+  background: var(--doctor-surface, #fff);
+}
+
+.doctor-prescription-item__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.doctor-consultation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.doctor-prescription-error {
+  color: var(--danger);
+  margin: 0.75rem 0;
+}
+
+@media (max-width: 639px) {
+  .doctor-prescription-item__grid { grid-template-columns: 1fr; }
+  .doctor-workspace .page-header__actions { width: 100%; }
+  .doctor-workspace .page-header__actions > .btn { width: 100%; justify-content: center; }
 }
 

@@ -97,6 +97,7 @@ class PrescriptionItemSerializer(serializers.ModelSerializer):
     medicineName = serializers.CharField(source="medicine.name", read_only=True)
     genericName = serializers.CharField(source="medicine.generic_name", read_only=True)
     durationDays = serializers.IntegerField(source="duration_days", required=False, allow_null=True)
+    quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = PrescriptionItem
@@ -112,6 +113,12 @@ class PrescriptionItemSerializer(serializers.ModelSerializer):
             "quantity",
         ]
         read_only_fields = ["id", "medicineName", "genericName"]
+
+    def get_quantity(self, obj):
+        # Quantity is not final until a pharmacist dispenses a pending prescription.
+        if obj.prescription.status == Prescription.Status.PENDING:
+            return None
+        return obj.quantity
 
 
 class PrescriptionSerializer(serializers.ModelSerializer):

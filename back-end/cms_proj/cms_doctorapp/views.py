@@ -122,6 +122,12 @@ class ConsultationViewSet(viewsets.ModelViewSet):
         if existing:
             return Response(self.get_serializer(existing).data, status=status.HTTP_200_OK)
 
+        if appointment.status not in {Appointment.Status.CHECKED_IN, Appointment.Status.IN_PROGRESS}:
+            return Response(
+                {"detail": "The patient must be checked in before a consultation can start.", "code": "INVALID_APPOINTMENT_STATE"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Generate record ID
         existing_recs = ConsultationRecord.objects.filter(record_id__startswith="con-").values_list("record_id", flat=True)
         max_num = 0
@@ -139,7 +145,7 @@ class ConsultationViewSet(viewsets.ModelViewSet):
             patient=appointment.patient,
             doctor=appointment.doctor,
             appointment=appointment,
-            visit_date=datetime.date.today(),
+            visit_date=timezone.localdate(),
             is_completed=False,
             vital_signs={},
             addendums=[],
@@ -249,6 +255,8 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
     pagination_class = StandardPagination
 
     def get_permissions(self):
+        if self.action in ["dispense", "reject"]:
+            return [IsRole("ADMIN", "PHARMACIST")()]
         if self.action in ["create", "cancel"]:
             return [IsRole("ADMIN", "DOCTOR")()]
         return [IsRole("ADMIN", "DOCTOR", "PHARMACIST")()]
@@ -293,6 +301,22 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
 
         if not patient_id or not items_data:
             return Response({"detail": "patientId and items are required.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(items_data, list) or any(not isinstance(item, dict) for item in items_data):
+            return Response({"detail": "items must be a list of medicine instructions.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+
+        for item in items_data:
+            duration = item.get("durationDays")
+            if isinstance(duration, bool) or duration is None:
+                return Response({"detail": "A duration in days is required for every prescribed medicine.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                parsed_duration = int(duration)
+            except (TypeError, ValueError):
+                parsed_duration = 0
+            if parsed_duration < 1 or str(duration).strip() != str(parsed_duration):
+                return Response({"detail": "Each medicine duration must be a whole number of days greater than zero.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            if _role_id(request.user) == "DOCTOR" and "quantity" in item:
+                return Response({"detail": "Dispensing quantity is set by the pharmacist.", "code": "PHARMACIST_QUANTITY_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
+            item["durationDays"] = parsed_duration
 
         patient = Patient.objects.filter(pk=patient_id).first()
         if not patient:
@@ -370,6 +394,13 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         con_id = data.get("consultationId")
         if con_id:
             consultation = ConsultationRecord.objects.filter(pk=con_id).first()
+            if not consultation:
+                return Response({"detail": "Consultation not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
+            if consultation.patient_id != patient.patient_id or consultation.doctor_id != doctor.doctor_id:
+                return Response(
+                    {"detail": "The consultation must belong to the selected patient and doctor.", "code": "CONSULTATION_MISMATCH"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         appointment = consultation.appointment if consultation else None
 
@@ -390,7 +421,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
                 prescription=prescription,
                 medicine=med,
                 dosage=item_dict.get("dosage", "1-0-1"),
-                duration_days=item_dict.get("durationDays", 5),
+                duration_days=item_dict["durationDays"],
                 instructions=item_dict.get("instructions", "After food"),
                 frequency=item_dict.get("frequency", "Twice daily"),
                 quantity=item_dict.get("quantity", 1),
@@ -432,11 +463,73 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         - Creates pharmacy bill & payment if paid
         """
         prescription = self.get_object()
+        prescription = Prescription.objects.select_for_update().get(pk=prescription.pk)
         if prescription.status in [Prescription.Status.DISPENSED, Prescription.Status.CANCELLED]:
             return Response(
                 {"detail": f"Cannot dispense a prescription that is {prescription.status}.", "code": "INVALID_STATE"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        prescription_items = list(
+            PrescriptionItem.objects.select_for_update()
+            .filter(prescription=prescription)
+            .order_by("item_id")
+        )
+        if not prescription_items:
+            return Response({"detail": "This prescription has no medicine items to dispense.", "code": "INVALID_PRESCRIPTION"}, status=status.HTTP_400_BAD_REQUEST)
+
+        medicines = {
+            medicine.pk: medicine
+            for medicine in Medicine.objects.select_for_update()
+            .filter(pk__in=[item.medicine_id for item in prescription_items])
+            .order_by("medicine_id")
+        }
+        for item in prescription_items:
+            item.medicine = medicines[item.medicine_id]
+
+        submitted_items = request.data.get("items")
+        if not isinstance(submitted_items, list):
+            return Response({"detail": "Provide a dispensing quantity for every prescribed medicine.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+        quantities = {}
+        for submitted in submitted_items:
+            if not isinstance(submitted, dict) or not submitted.get("itemId") or submitted["itemId"] in quantities:
+                return Response({"detail": "Each medicine must have one valid itemId and quantity.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            raw_quantity = submitted.get("quantity")
+            if isinstance(raw_quantity, bool):
+                return Response({"detail": "Dispensing quantities must be whole numbers greater than zero.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                quantity = int(raw_quantity)
+            except (TypeError, ValueError):
+                quantity = 0
+            if quantity < 1 or str(raw_quantity).strip() != str(quantity):
+                return Response({"detail": "Dispensing quantities must be whole numbers greater than zero.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+            quantities[submitted["itemId"]] = quantity
+
+        expected_ids = {item.item_id for item in prescription_items}
+        if set(quantities) != expected_ids:
+            return Response({"detail": "Provide a dispensing quantity for every prescribed medicine.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
+
+        requested_by_medicine = {}
+        for item in prescription_items:
+            requested_by_medicine[item.medicine_id] = requested_by_medicine.get(item.medicine_id, 0) + quantities[item.item_id]
+
+        for medicine_id, requested_quantity in requested_by_medicine.items():
+            medicine = medicines[medicine_id]
+            available = max(0, medicine.stock_quantity)
+            if isinstance(medicine.batches, list) and medicine.batches:
+                try:
+                    batch_stock = sum(max(0, int(batch.get("quantity", 0))) for batch in medicine.batches if isinstance(batch, dict))
+                except (TypeError, ValueError):
+                    batch_stock = 0
+                available = min(available, batch_stock)
+            if requested_quantity > available:
+                return Response(
+                    {"detail": f"The requested quantity for {medicine.name} exceeds available stock.", "code": "INSUFFICIENT_STOCK", "availableQuantity": available},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        for item in prescription_items:
+            item.quantity = quantities[item.item_id]
 
         payment_info = request.data.get("payment", {})
         staff = getattr(request.user, "staff", None)
@@ -445,28 +538,35 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         all_dispensed = True
         total_cost = Decimal("0.00")
 
-        for item in prescription.items.select_related("medicine").all():
+        for item in prescription_items:
             med = item.medicine
             req_qty = item.quantity
             deducted = 0
+            dispensed_batch_no = "GENERAL"
 
             batches = list(med.batches) if isinstance(med.batches, list) else []
             batches.sort(key=lambda b: str(b.get("expiryDate") or "9999-12-31"))
 
             remaining = req_qty
-            for b in batches:
-                b_qty = int(b.get("quantity", 0))
-                if b_qty > 0:
-                    take = min(b_qty, remaining)
-                    b["quantity"] = b_qty - take
-                    remaining -= take
-                    deducted += take
-                    if remaining <= 0:
-                        break
+            if batches:
+                for batch in batches:
+                    b_qty = max(0, int(batch.get("quantity", 0)))
+                    if b_qty > 0:
+                        take = min(b_qty, remaining)
+                        if deducted == 0:
+                            dispensed_batch_no = batch.get("batchNo") or "GENERAL"
+                        batch["quantity"] = b_qty - take
+                        remaining -= take
+                        deducted += take
+                        if remaining <= 0:
+                            break
+            else:
+                deducted = min(req_qty, max(0, med.stock_quantity))
 
             med.batches = batches
             med.stock_quantity = max(0, med.stock_quantity - deducted)
             med.save(update_fields=["batches", "stock_quantity", "updated_at"])
+            item.save(update_fields=["quantity"])
 
             if deducted < req_qty:
                 all_dispensed = False
@@ -475,7 +575,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
 
             StockLedgerEntry.objects.create(
                 medicine=med,
-                batch_no=batches[0].get("batchNo") if batches else "GENERAL",
+                batch_no=dispensed_batch_no,
                 entry_type="DISPENSE",
                 quantity=-deducted,
                 reference_id=prescription.prescription_id,

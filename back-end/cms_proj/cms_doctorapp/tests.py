@@ -10,6 +10,8 @@ Automated test suite for Doctor domain:
 
 import datetime
 from decimal import Decimal
+from unittest.mock import patch
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -169,6 +171,8 @@ class DoctorDomainTests(APITestCase):
 
     def test_consultation_lifecycle(self):
         headers = self.auth_headers(self.user_doc)
+        self.appointment.status = Appointment.Status.CHECKED_IN
+        self.appointment.save(update_fields=["status"])
 
         # 1. get-or-create: initializes draft and sets appointment to IN_PROGRESS
         res_init = self.client.post("/api/consultations/get-or-create/", {"appointmentId": "appt-001"}, format="json", **headers)
@@ -205,6 +209,17 @@ class DoctorDomainTests(APITestCase):
         self.assertEqual(res_add.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res_add.data["addendums"]), 1)
 
+    def test_consultation_requires_check_in(self):
+        response = self.client.post(
+            "/api/consultations/get-or-create/",
+            {"appointmentId": self.appointment.appointment_id},
+            format="json",
+            **self.auth_headers(self.user_doc),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data.get("code"), "INVALID_APPOINTMENT_STATE")
+        self.assertFalse(ConsultationRecord.objects.filter(appointment=self.appointment).exists())
+
     def test_prescription_allergy_check_and_dispense(self):
         headers_doc = self.auth_headers(self.user_doc)
 
@@ -212,7 +227,7 @@ class DoctorDomainTests(APITestCase):
         bad_payload = {
             "patientId": "pat-01",
             "doctorId": "staff-doc-01",
-            "items": [{"medicineId": "med-01", "quantity": 10}],
+            "items": [{"medicineId": "med-01", "durationDays": 5}],
         }
         res_bad = self.client.post("/api/prescriptions/", bad_payload, format="json", **headers_doc)
         self.assertEqual(res_bad.status_code, status.HTTP_400_BAD_REQUEST)
@@ -224,9 +239,19 @@ class DoctorDomainTests(APITestCase):
         self.assertEqual(res_override.status_code, status.HTTP_201_CREATED)
         rx_id = res_override.data["id"]
 
-        # 3. Pharmacist dispenses prescription
+        # Doctors cannot dispense; the pharmacist must explicitly supply final quantities.
+        doctor_dispense = self.client.post(
+            f"/api/prescriptions/{rx_id}/dispense/",
+            {"items": [{"itemId": res_override.data["items"][0]["id"], "quantity": 10}]},
+            format="json",
+            **headers_doc,
+        )
+        self.assertEqual(doctor_dispense.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Pharmacist dispenses prescription
         headers_pharm = self.auth_headers(self.user_pharm)
         dispense_payload = {
+            "items": [{"itemId": res_override.data["items"][0]["id"], "quantity": 10}],
             "payment": {"status": "PAID", "method": "CASH"},
         }
         res_disp = self.client.post(f"/api/prescriptions/{rx_id}/dispense/", dispense_payload, format="json", **headers_pharm)
@@ -250,28 +275,276 @@ class DoctorDomainTests(APITestCase):
         self.assertIsNotNone(ledger)
         self.assertEqual(ledger.quantity, -10)
 
+    def test_direct_prescription_creation_without_consultation(self):
+        headers_doc = self.auth_headers(self.user_doc)
+        payload = {
+            "patientId": self.patient.patient_id,
+            "items": [{
+                "medicineId": self.med_para.medicine_id,
+                "dosage": "1 tablet",
+                "frequency": "Twice daily",
+                "durationDays": 6,
+                "instructions": "After food",
+            }],
+        }
+
+        missing_duration = {**payload, "items": [{"medicineId": self.med_para.medicine_id}]}
+        invalid_response = self.client.post("/api/prescriptions/", missing_duration, format="json", **headers_doc)
+        self.assertEqual(invalid_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(invalid_response.data.get("code"), "VALIDATION_ERROR")
+
+        doctor_quantity = {**payload, "items": [{**payload["items"][0], "quantity": 12}]}
+        quantity_response = self.client.post("/api/prescriptions/", doctor_quantity, format="json", **headers_doc)
+        self.assertEqual(quantity_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(quantity_response.data.get("code"), "PHARMACIST_QUANTITY_REQUIRED")
+
+        other_patient = Patient.objects.create(
+            patient_id="pat-other", mrn="CLN-OTHER-0001", name="Other Doctor Patient",
+            dob=datetime.date(1988, 2, 4), gender="F", phone="9847000002", is_active=True,
+        )
+        unauthorized_patient = self.client.post(
+            "/api/prescriptions/", {**payload, "patientId": other_patient.patient_id}, format="json", **headers_doc
+        )
+        self.assertEqual(unauthorized_patient.status_code, status.HTTP_404_NOT_FOUND)
+
+        another_assigned_patient = Patient.objects.create(
+            patient_id="pat-assigned", mrn="CLN-ASSIGNED-0001", name="Assigned Patient",
+            dob=datetime.date(1992, 8, 9), gender="M", phone="9847000003",
+            assigned_doctor=self.doctor, is_active=True,
+        )
+        consultation = ConsultationRecord.objects.create(
+            record_id="con-prescription-test", patient=self.patient, doctor=self.doctor,
+            appointment=self.appointment, visit_date=timezone.localdate(), is_completed=False,
+        )
+        mismatched_consultation = self.client.post(
+            "/api/prescriptions/",
+            {**payload, "patientId": another_assigned_patient.patient_id, "consultationId": consultation.record_id},
+            format="json",
+            **headers_doc,
+        )
+        self.assertEqual(mismatched_consultation.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(mismatched_consultation.data.get("code"), "CONSULTATION_MISMATCH")
+
+        response = self.client.post("/api/prescriptions/", payload, format="json", **headers_doc)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        prescription = Prescription.objects.get(pk=response.data["id"])
+        self.assertEqual(prescription.patient, self.patient)
+        self.assertEqual(prescription.doctor, self.doctor)
+        self.assertIsNone(prescription.consultation)
+        self.assertIsNone(prescription.appointment)
+        self.assertEqual(prescription.items.get().duration_days, 6)
+        self.assertEqual(response.data["items"][0]["quantity"], None)
+
+        pharmacy_list = self.client.get(
+            f"/api/prescriptions/?status=PENDING&patient={self.patient.patient_id}",
+            **self.auth_headers(self.user_pharm),
+        )
+        self.assertEqual(pharmacy_list.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item["id"] == prescription.prescription_id for item in pharmacy_list.data["results"]))
+
     def test_prescription_partial_dispense(self):
         headers_doc = self.auth_headers(self.user_doc)
         headers_pharm = self.auth_headers(self.user_pharm)
 
-        # Med Paracetamol has stock_quantity=50. Prescribe 75 units.
+        # Duplicate medicine lines are checked together before any inventory update.
         payload = {
             "patientId": "pat-01",
             "doctorId": "staff-doc-01",
-            "items": [{"medicineId": "med-02", "quantity": 75}],
+            "items": [
+                {"medicineId": "med-02", "durationDays": 5},
+                {"medicineId": "med-02", "durationDays": 5},
+            ],
         }
         res_rx = self.client.post("/api/prescriptions/", payload, format="json", **headers_doc)
         self.assertEqual(res_rx.status_code, status.HTTP_201_CREATED)
         rx_id = res_rx.data["id"]
 
-        # Pharmacist dispenses
-        res_disp = self.client.post(f"/api/prescriptions/{rx_id}/dispense/", {"payment": {"status": "PAID"}}, format="json", **headers_pharm)
-        self.assertEqual(res_disp.status_code, status.HTTP_200_OK)
-        self.assertEqual(res_disp.data["status"], "PARTIALLY_DISPENSED")
+        # Pharmacist must supply a quantity for each line.
+        missing_quantity = self.client.post(
+            f"/api/prescriptions/{rx_id}/dispense/", {}, format="json", **headers_pharm
+        )
+        self.assertEqual(missing_quantity.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(missing_quantity.data.get("code"), "VALIDATION_ERROR")
+
+        # Each line is individually within stock, but their combined quantity is not.
+        item_ids = [item["id"] for item in res_rx.data["items"]]
+        res_disp = self.client.post(
+            f"/api/prescriptions/{rx_id}/dispense/",
+            {"items": [{"itemId": item_ids[0], "quantity": 30}, {"itemId": item_ids[1], "quantity": 30}]},
+            format="json",
+            **headers_pharm,
+        )
+        self.assertEqual(res_disp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res_disp.data.get("code"), "INSUFFICIENT_STOCK")
 
         # Verify stock decremented to 0
         self.med_para.refresh_from_db()
-        self.assertEqual(self.med_para.stock_quantity, 0)
+        self.assertEqual(self.med_para.stock_quantity, 50)
+
+    def test_reception_to_doctor_to_pharmacy_workflow(self):
+        clinic_today = timezone.localdate()
+        now = timezone.make_aware(datetime.datetime.combine(clinic_today, datetime.time(8, 0)))
+        receptionist = Staff.objects.create(
+            staff_id="staff-rec-e2e", name="Receptionist E2E", email="reception.e2e@clinova.test",
+            role=self.role_rec, is_active=True,
+        )
+        user_rec = User.objects.create(
+            user_id="user-rec-e2e", username="reception-e2e", role=self.role_rec,
+            staff=receptionist, is_active=True,
+        )
+        user_rec.set_password("Pass@123")
+        user_rec.save()
+        patient = Patient.objects.create(
+            patient_id="pat-e2e", mrn="CLN-E2E-0001", name="Workflow Test Patient",
+            dob=datetime.date(1990, 4, 3), gender="F", phone="9847000099",
+            assigned_doctor=self.doctor, is_active=True,
+        )
+        medicine = Medicine.objects.create(
+            medicine_id="med-e2e", name="Workflow Test Medicine", generic_name="Workflow compound",
+            selling_price=Decimal("3.00"), stock_quantity=40,
+            batches=[{"batchNo": "E2E-1", "quantity": 40, "expiryDate": "2030-12-31"}],
+        )
+
+        receptionist_headers = self.auth_headers(user_rec)
+        with patch("cms_recepapp.views.timezone.localtime", return_value=now), patch(
+            "cms_recepapp.views.timezone.localdate", return_value=clinic_today
+        ):
+            slot_response = self.client.get(
+                "/api/appointments/next-walkin-slot/?doctor=staff-doc-01", **receptionist_headers
+            )
+            self.assertEqual(slot_response.status_code, status.HTTP_200_OK)
+            booking_response = self.client.post(
+                "/api/appointments/book-and-pay/",
+                {
+                    "patientId": patient.patient_id,
+                    "doctorId": self.staff_doc.staff_id,
+                    "mode": "WALK_IN",
+                    "date": clinic_today.isoformat(),
+                    "time": slot_response.data["time"],
+                    "type": "New Visit",
+                    "arrivalConfirmed": True,
+                    "payment": {"method": "CASH", "confirmed": True},
+                },
+                format="json",
+                **receptionist_headers,
+            )
+        self.assertEqual(booking_response.status_code, status.HTTP_201_CREATED)
+        appt_id = booking_response.data["appointment"]["id"]
+        appointment = Appointment.objects.get(pk=appt_id)
+        self.assertEqual(appointment.patient, patient)
+        self.assertEqual(appointment.doctor, self.doctor)
+        self.assertEqual(appointment.appointment_date, clinic_today)
+        self.assertEqual(appointment.time_slot, slot_response.data["time"])
+        self.assertEqual(appointment.status, Appointment.Status.CHECKED_IN)
+
+        doctor_headers = self.auth_headers(self.user_doc)
+        doctor_list = self.client.get(
+            f"/api/appointments/?doctor=me&date={clinic_today.isoformat()}", **doctor_headers
+        )
+        self.assertEqual(doctor_list.status_code, status.HTTP_200_OK)
+        visible_appointment = next(row for row in doctor_list.data["results"] if row["id"] == appt_id)
+        self.assertEqual(visible_appointment["patient"]["id"], patient.patient_id)
+        self.assertEqual(visible_appointment["patient"]["name"], patient.name)
+        self.assertEqual(visible_appointment["date"], clinic_today.isoformat())
+        self.assertEqual(visible_appointment["time"], appointment.time_slot)
+        self.assertEqual(visible_appointment["status"], Appointment.Status.CHECKED_IN)
+
+        other_staff = Staff.objects.create(
+            staff_id="staff-doc-e2e", name="Other Doctor", email="doctor.e2e@clinova.test",
+            role=self.role_doc, department=self.dept, is_active=True,
+        )
+        other_doctor = Doctor.objects.create(doctor_id="doc-e2e", staff=other_staff, department=self.dept)
+        other_user = User.objects.create(
+            user_id="user-doc-e2e", username="other-doctor-e2e", role=self.role_doc,
+            staff=other_staff, is_active=True,
+        )
+        other_user.set_password("Pass@123")
+        other_user.save()
+        other_appointment = Appointment.objects.create(
+            appointment_id="appt-e2e-other", patient=patient, doctor=other_doctor, department=self.dept,
+            appointment_date=clinic_today, time_slot="14:00", status=Appointment.Status.SCHEDULED,
+        )
+        unauthorized_read = self.client.get(
+            f"/api/appointments/{other_appointment.pk}/", **self.auth_headers(self.user_doc)
+        )
+        self.assertEqual(unauthorized_read.status_code, status.HTTP_404_NOT_FOUND)
+
+        start_response = self.client.post(
+            "/api/consultations/get-or-create/", {"appointmentId": appt_id}, format="json", **doctor_headers
+        )
+        self.assertEqual(start_response.status_code, status.HTTP_201_CREATED)
+        consultation_id = start_response.data["id"]
+        repeated_start = self.client.post(
+            "/api/consultations/get-or-create/", {"appointmentId": appt_id}, format="json", **doctor_headers
+        )
+        self.assertEqual(repeated_start.status_code, status.HTTP_200_OK)
+        self.assertEqual(repeated_start.data["id"], consultation_id)
+        save_response = self.client.patch(
+            f"/api/consultations/{consultation_id}/save-draft/",
+            {"symptoms": "Headache", "diagnosis": "Tension headache", "notes": "Hydration advised."},
+            format="json",
+            **doctor_headers,
+        )
+        self.assertEqual(save_response.status_code, status.HTTP_200_OK)
+        consultation = ConsultationRecord.objects.get(pk=consultation_id)
+        self.assertEqual(consultation.patient, patient)
+        self.assertEqual(consultation.doctor, self.doctor)
+        self.assertEqual(consultation.appointment, appointment)
+        self.assertEqual(consultation.diagnosis, "Tension headache")
+
+        prescription_response = self.client.post(
+            "/api/prescriptions/",
+            {
+                "patientId": patient.patient_id,
+                "doctorId": self.staff_doc.staff_id,
+                "consultationId": consultation_id,
+                "items": [{
+                    "medicineId": medicine.medicine_id,
+                    "dosage": "1 tablet",
+                    "frequency": "Twice daily",
+                    "durationDays": 5,
+                    "instructions": "After food",
+                }],
+            },
+            format="json",
+            **doctor_headers,
+        )
+        self.assertEqual(prescription_response.status_code, status.HTTP_201_CREATED)
+        prescription_id = prescription_response.data["id"]
+        prescription_item = prescription_response.data["items"][0]
+        self.assertEqual(prescription_item["durationDays"], 5)
+        self.assertIsNone(prescription_item["quantity"])
+        self.assertEqual(Prescription.objects.get(pk=prescription_id).consultation, consultation)
+
+        pharmacist_headers = self.auth_headers(self.user_pharm)
+        pharmacy_queue = self.client.get(
+            "/api/prescriptions/?status=PENDING", **pharmacist_headers
+        )
+        self.assertEqual(pharmacy_queue.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(row["id"] == prescription_id for row in pharmacy_queue.data["results"]))
+        dispense_response = self.client.post(
+            f"/api/prescriptions/{prescription_id}/dispense/",
+            {"items": [{"itemId": prescription_item["id"], "quantity": 7}], "payment": {"status": "PAID", "method": "CASH"}},
+            format="json",
+            **pharmacist_headers,
+        )
+        self.assertEqual(dispense_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(dispense_response.data["status"], Prescription.Status.DISPENSED)
+        self.assertEqual(dispense_response.data["items"][0]["quantity"], 7)
+        self.assertEqual(dispense_response.data["items"][0]["durationDays"], 5)
+        prescription = Prescription.objects.get(pk=prescription_id)
+        self.assertEqual(prescription.dispensed_by, self.staff_pharm)
+        self.assertEqual(prescription.items.get().quantity, 7)
+        doctor_prescriptions = self.client.get(
+            "/api/prescriptions/?doctor=me&status=DISPENSED", **doctor_headers
+        )
+        self.assertEqual(doctor_prescriptions.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(row["id"] == prescription_id for row in doctor_prescriptions.data["results"]))
+        medicine.refresh_from_db()
+        self.assertEqual(medicine.stock_quantity, 33)
+        self.assertTrue(StockLedgerEntry.objects.filter(
+            medicine=medicine, reference_id=prescription_id, entry_type="DISPENSE", quantity=-7
+        ).exists())
 
     def test_lab_order_and_critical_result(self):
         headers_doc = self.auth_headers(self.user_doc)

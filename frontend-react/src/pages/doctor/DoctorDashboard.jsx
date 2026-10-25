@@ -7,9 +7,10 @@ import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
 import { LoadingState, ErrorState, EmptyState } from '../../components/States';
 import { formatTime } from '../../utils/format';
+import { clinicDateString } from '../../utils/clinicDate';
 import './doctor-pages.css';
 
-const today = new Date().toISOString().slice(0, 10);
+const today = clinicDateString();
 
 function getAppointmentRows(data) {
   if (Array.isArray(data)) return data;

@@ -174,6 +174,21 @@ export const prescriptionsApi = {
     const res = await apiClient.post(`/prescriptions/${encodeURIComponent(id)}/cancel/`, data);
     return res.data;
   },
+  dispense: async (id, data) => {
+    const res = await apiClient.post(`/prescriptions/${encodeURIComponent(id)}/dispense/`, data);
+    return res.data;
+  },
+};
+
+export const medicinesApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/medicines/', { params });
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/medicines/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
 };
 
 export const labOrdersApi = {

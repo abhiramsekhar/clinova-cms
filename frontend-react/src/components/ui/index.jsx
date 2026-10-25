@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import Icon from '../Icon';
 import DataTable from './DataTable';
 import { ToastProvider, useToast } from './Toast';
@@ -9,21 +9,57 @@ export { DataTable, ToastProvider, useToast, Badge };
 /**
  * Reusable modal overlay with focus trap.
  */
-export function Modal({ isOpen, onClose, title, size = 'md', children, footer }) {
+export function Modal({ isOpen, onClose, title, size = 'md', children, footer, overlayClassName = '', contentClassName = '', trapFocus = false }) {
   const overlayRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
+    const previouslyFocused = document.activeElement;
+    const focusableSelector = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+    const focusableElements = () => Array.from(overlayRef.current?.querySelectorAll(focusableSelector) || []).filter((element) => element.getClientRects().length);
+    let focusFrame;
+    if (trapFocus) {
+      focusFrame = window.requestAnimationFrame(() => {
+        const firstFocusable = focusableElements()[0];
+        (firstFocusable || overlayRef.current?.querySelector('[role="dialog"]'))?.focus();
+      });
+    }
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.();
+      if (e.key === 'Escape') {
+        onCloseRef.current?.();
+        return;
+      }
+      if (e.key !== 'Tab' || !trapFocus) return;
+      const focusable = focusableElements();
+      if (!focusable.length) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !overlayRef.current?.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !overlayRef.current?.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => {
+      if (focusFrame) window.cancelAnimationFrame(focusFrame);
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = '';
+      if (trapFocus && previouslyFocused instanceof HTMLElement && document.contains(previouslyFocused)) previouslyFocused.focus();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, trapFocus]);
 
   if (!isOpen) return null;
 
@@ -31,7 +67,7 @@ export function Modal({ isOpen, onClose, title, size = 'md', children, footer })
 
   return (
     <div
-      className={`modal-overlay${isOpen ? ' is-open' : ''}`}
+      className={`modal-overlay${isOpen ? ' is-open' : ''}${overlayClassName ? ` ${overlayClassName}` : ''}`}
       ref={overlayRef}
       onClick={(e) => { if (e.target === overlayRef.current) onClose?.(); }}
       style={{
@@ -43,9 +79,11 @@ export function Modal({ isOpen, onClose, title, size = 'md', children, footer })
       }}
     >
       <div
-        className="glass card modal-content"
+        className={`glass card modal-content${contentClassName ? ` ${contentClassName}` : ''}`}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        tabIndex={trapFocus ? -1 : undefined}
         style={{
           width: '100%',
           maxWidth: widths[size] || widths.md,
@@ -65,7 +103,7 @@ export function Modal({ isOpen, onClose, title, size = 'md', children, footer })
             padding: '1.25rem 1.5rem',
             borderBottom: '1px solid var(--border)',
           }}>
-            <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: 'var(--text)' }}>{title}</h3>
+            <h3 id={titleId} style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: 'var(--text)' }}>{title}</h3>
             <button
               type="button"
               className="btn btn--ghost btn--icon"

@@ -13,20 +13,67 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 from datetime import timedelta
 from pathlib import Path
 
-from decouple import Csv, config
+from decouple import Config, Csv, RepositoryEnv
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_FILE = BASE_DIR.parent / '.env'
+
+# Resolve the backend-local .env from this file, independent of the working directory.
+# python-decouple gives process environment variables precedence over file values.
+env = Config(RepositoryEnv(str(ENV_FILE)) if ENV_FILE.is_file() else {})
+
+
+def required_setting(name, *legacy_names):
+    value = env(name, default=None)
+    if value is None or not str(value).strip():
+        for legacy_name in legacy_names:
+            value = env(legacy_name, default=None)
+            if value is not None and str(value).strip():
+                break
+    if value is None or not str(value).strip():
+        raise ImproperlyConfigured(
+            f"Missing required setting {name}. Set it in the process environment "
+            f"or in {ENV_FILE.name} for local development."
+        )
+    return value
+
+
+def boolean_setting(name, *legacy_names, default=False):
+    value = env(name, default=None)
+    source_name = name
+    if value is None:
+        for legacy_name in legacy_names:
+            value = env(legacy_name, default=None)
+            if value is not None:
+                source_name = legacy_name
+                break
+    if value is None:
+        return default
+
+    normalized = str(value).strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    raise ImproperlyConfigured(
+        f"Invalid boolean setting {source_name}. Use true/false, yes/no, on/off, or 1/0."
+    )
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-(5(s@l=xr5rs5(y()m#c)$w&7=%*80j3u@qmhoux%92h$^wihd')
+SECRET_KEY = required_setting('DJANGO_SECRET_KEY', 'SECRET_KEY')
 
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = boolean_setting('DJANGO_DEBUG', 'DEBUG')
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv())
+ALLOWED_HOSTS = env(
+    'DJANGO_ALLOWED_HOSTS',
+    default=env('ALLOWED_HOSTS', default='localhost,127.0.0.1'),
+    cast=Csv(),
+)
 
 
 # Application definition
@@ -90,11 +137,11 @@ WSGI_APPLICATION = 'cms_proj.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'cms_db',
-        'USER': 'root',
-        'PASSWORD': '1234',
-        'HOST': 'localhost',
-        'PORT': '3306',
+        'NAME': required_setting('DB_NAME'),
+        'USER': required_setting('DB_USER'),
+        'PASSWORD': required_setting('DB_PASSWORD'),
+        'HOST': required_setting('DB_HOST'),
+        'PORT': required_setting('DB_PORT'),
         'OPTIONS': {
             'charset': 'utf8mb4',
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
@@ -126,7 +173,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = config('CLINIC_TIME_ZONE', default='Asia/Kolkata')
+TIME_ZONE = env('CLINIC_TIME_ZONE', default='Asia/Kolkata')
 
 USE_I18N = True
 
@@ -149,7 +196,7 @@ MAILERS = {
 }
 
 # CORS Configuration
-CORS_ALLOWED_ORIGINS = config(
+CORS_ALLOWED_ORIGINS = env(
     'CORS_ALLOWED_ORIGINS',
     default='http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5500,http://127.0.0.1:5500,http://127.0.0.1:8000,http://localhost:5174',
     cast=Csv()
