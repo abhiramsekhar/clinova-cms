@@ -1,6 +1,12 @@
+# Legacy frontend
+/front-end/
+
+# Python virtual environments
+**/venv/
+**/.venv/
+**/bravo/
+
+# Local environment variables
 .env
-venv/
-node_modules/
-dist/
-__pycache__/
-*.pyc
+.env.*
+!.env.example
