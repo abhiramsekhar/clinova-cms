@@ -17,9 +17,11 @@ const ROLE_LABELS = {
 
 export function Topbar({ onToggleSidebar }) {
   const { user, role, logout } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const isPatientDirectory = location.pathname === '/reception/patients';
+  const isReceptionBilling = location.pathname === '/reception/billing';
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notifMenuOpen, setNotifMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
@@ -59,7 +61,7 @@ export function Topbar({ onToggleSidebar }) {
       page_size: 5,
       ...(role === 'DOCTOR' ? { doctor_scope: 'mine' } : {}),
     }),
-    enabled: ['RECEPTIONIST', 'DOCTOR'].includes(role) && patientSearch.length >= 2 && searchOpen,
+    enabled: !isPatientDirectory && !isReceptionBilling && ['RECEPTIONIST', 'DOCTOR'].includes(role) && patientSearch.length >= 2 && searchOpen,
   });
   const patientSearchResults = Array.isArray(patientSearchData)
     ? patientSearchData
@@ -72,7 +74,7 @@ export function Topbar({ onToggleSidebar }) {
   } = useQuery({
     queryKey: ['globalAppointmentSearch', patientSearch],
     queryFn: () => appointmentsApi.list({ search: patientSearch, page_size: 5 }),
-    enabled: role === 'RECEPTIONIST' && patientSearch.length >= 2 && searchOpen,
+    enabled: !isPatientDirectory && !isReceptionBilling && role === 'RECEPTIONIST' && patientSearch.length >= 2 && searchOpen,
   });
   const appointmentSearchResults = Array.isArray(appointmentSearchData)
     ? appointmentSearchData
@@ -80,6 +82,7 @@ export function Topbar({ onToggleSidebar }) {
 
   // Fetch notifications
   const fetchNotifications = async () => {
+    if (role === 'RECEPTIONIST') return;
     try {
       const data = await notificationsApi.list();
       const list = Array.isArray(data) ? data : (data?.results || []);
@@ -91,12 +94,12 @@ export function Topbar({ onToggleSidebar }) {
   };
 
   useEffect(() => {
-    if (user) {
+    if (user && role !== 'RECEPTIONIST') {
       fetchNotifications();
       const interval = setInterval(fetchNotifications, 30000); // 30s poll
       return () => clearInterval(interval);
     }
-  }, [user]);
+  }, [user, role]);
 
   // Click outside listener
   useEffect(() => {
@@ -198,7 +201,7 @@ export function Topbar({ onToggleSidebar }) {
               id="lab-search-input"
             />
           </form>
-        ) : role !== 'LAB_TECH' && (
+        ) : role !== 'LAB_TECH' && !isPatientDirectory && !isReceptionBilling && (
           <form
             onSubmit={handleSearchSubmit}
             className="search-bar"
@@ -328,6 +331,7 @@ export function Topbar({ onToggleSidebar }) {
       </div>
 
       <div className="topbar__right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        {role !== 'RECEPTIONIST' && <>
         {/* Notifications */}
         <div className="dropdown" ref={notifRef} style={{ position: 'relative' }}>
           <button
@@ -436,6 +440,7 @@ export function Topbar({ onToggleSidebar }) {
             </div>
           )}
         </div>
+        </>}
 
         {/* User Menu */}
         <div className="dropdown" ref={menuRef} style={{ position: 'relative' }}>

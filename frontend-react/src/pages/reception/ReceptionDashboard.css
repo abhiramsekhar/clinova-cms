@@ -1,0 +1,133 @@
+.reception-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.reception-dashboard-main,
+.reception-dashboard-side {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+  align-content: start;
+}
+
+.reception-dashboard-card {
+  min-width: 0;
+  padding: 1.25rem;
+  overflow: hidden;
+}
+
+.reception-card-header,
+.reception-card-tools,
+.reception-date-tool {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.reception-card-header {
+  margin-bottom: 1rem;
+}
+
+.reception-card-tools,
+.reception-date-tool {
+  justify-content: flex-start;
+}
+
+.reception-card-tools .form-input,
+.reception-date-tool .form-input,
+.reception-card-header > .form-input {
+  width: auto;
+  min-width: 135px;
+  max-width: 100%;
+}
+
+.reception-date-tool {
+  color: var(--muted);
+  font-size: .8125rem;
+}
+
+.reception-scroll-list {
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.reception-bill-row,
+.reception-doctor-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.reception-bill-row:last-child,
+.reception-doctor-row:last-child {
+  border-bottom: 0;
+}
+
+.reception-bill-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.reception-doctor-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.reception-doctor-avatar {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  flex: 0 0 38px;
+  place-items: center;
+  color: var(--primary);
+  background: rgba(5, 102, 141, .12);
+  border-radius: 50%;
+}
+
+.reception-doctor-info {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+@media (max-width: 1100px) {
+  .reception-dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reception-dashboard-side {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 650px) {
+  .reception-dashboard-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reception-dashboard-grid,
+  .reception-dashboard-main,
+  .reception-dashboard-side {
+    gap: 16px;
+  }
+
+  .reception-card-tools,
+  .reception-date-tool {
+    width: 100%;
+  }
+
+  .reception-card-tools .form-input,
+  .reception-date-tool .form-input,
+  .reception-card-header > .form-input {
+    flex: 1;
+  }
+}

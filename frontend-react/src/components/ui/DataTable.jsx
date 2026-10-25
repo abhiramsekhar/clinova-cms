@@ -11,6 +11,7 @@ export function DataTable({
   emptyIcon = 'icon-search',
   perPage = 10,
   defaultSort = null,
+  defaultSortDescending = false,
   searchPlaceholder = 'Search records...',
   showSearch = false,
   onRowClick,
@@ -18,7 +19,7 @@ export function DataTable({
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [sortKey, setSortKey] = useState(defaultSort);
-  const [sortAsc, setSortAsc] = useState(true);
+  const [sortAsc, setSortAsc] = useState(!defaultSortDescending);
 
   // Filtered by local search if showSearch
   const filteredData = useMemo(() => {

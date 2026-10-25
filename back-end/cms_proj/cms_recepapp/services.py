@@ -9,18 +9,74 @@ Business logic services for reception workflows:
 import datetime
 import json
 from decimal import Decimal
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from cms_backendapp.models import Setting, Department, Staff
+from cms_backendapp.audit import log_audit
+from cms_backendapp.models import Setting, Department, Staff, AuditLog
 from cms_doctorapp.models import Doctor
 from .models import Appointment, Patient, Bill, BillItem, Payment
 
 
 DEFAULT_CONSULTATION_FEE_PAISE = 50000  # ₹500
 DEFAULT_REGISTRATION_FEE_PAISE = 20000  # ₹200
-NO_SHOW_GRACE_MIN = 15
-INACTIVE_STATUSES = ["CANCELLED", "NO_SHOW"]
+
+
+@transaction.atomic
+def mark_expired_scheduled_appointments(request=None, now=None):
+    """Persist prior-booking NO_SHOW after the configured arrival grace period."""
+    current_time = timezone.localtime(now) if now else timezone.localtime()
+    try:
+        grace_minutes = max(0, int(get_setting("appointment.noShowGraceMinutes", 15)))
+    except (TypeError, ValueError):
+        grace_minutes = 15
+    current_date = current_time.date()
+    pending = Appointment.objects.select_for_update().filter(
+        status=Appointment.Status.SCHEDULED,
+        booking_mode=Appointment.BookingMode.PRIOR,
+        appointment_date__lte=current_date,
+    ).order_by("appointment_date", "time_slot")
+    updated_count = 0
+
+    for appointment in pending:
+        # An explicit late-arrival review protects today's restored booking
+        # while staff completes the separate manual check-in step.
+        if appointment.appointment_date == current_date and AuditLog.objects.filter(
+            action="UNDO_NO_SHOW_APPOINTMENT", entity_type="APPOINTMENT",
+            entity_id=appointment.pk, details__appointmentDate=current_date.isoformat(),
+        ).exists():
+            continue
+        try:
+            scheduled_time = datetime.time.fromisoformat(str(appointment.time_slot))
+        except ValueError:
+            continue
+        scheduled_at = datetime.datetime.combine(appointment.appointment_date, scheduled_time)
+        scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
+        if current_time < scheduled_at + datetime.timedelta(minutes=grace_minutes):
+            continue
+
+        notes_prefix = f"{appointment.notes}\n" if appointment.notes else ""
+        notes = f"{notes_prefix}Automatically marked No-show after {grace_minutes}-minute arrival grace period"
+        changed = Appointment.objects.filter(
+            pk=appointment.pk,
+            status=Appointment.Status.SCHEDULED,
+        ).update(
+            status=Appointment.Status.NO_SHOW,
+            notes=notes,
+            updated_at=timezone.now(),
+        )
+        if changed:
+            updated_count += changed
+            log_audit(
+                action="AUTO_NO_SHOW_APPOINTMENT",
+                entity_type="APPOINTMENT",
+                entity_id=appointment.appointment_id,
+                details={"graceMinutes": grace_minutes},
+                request=request,
+            )
+
+    return updated_count
 
 
 def get_setting(key, fallback=None):
@@ -117,42 +173,53 @@ def get_slot_board(doctor_ident, date_obj, now=None):
     Each slot has state: 'free' | 'booked' | 'past'.
     """
     doc = resolve_doctor(doctor_ident)
-    if not doc:
+    if not doc or not doc.staff.is_active:
+        return []
+    department = doc.department or doc.staff.department
+    if not department or not department.is_active or not department.is_bookable:
         return []
 
     if now is None:
-        now = datetime.datetime.now()
+        now = timezone.localtime()
 
-    today_str = now.strftime("%Y-%m-%d")
+    today_str = now.date().isoformat()
     target_date_str = date_obj.strftime("%Y-%m-%d") if isinstance(date_obj, (datetime.date, datetime.datetime)) else str(date_obj)
-    now_minutes = now.hour * 60 + now.minute
+    now_minutes = now.hour * 60 + now.minute + now.second / 60 + now.microsecond / 60000000
     cfg = get_slot_config()
 
     day_appts = list(Appointment.objects.filter(
         doctor=doc,
         appointment_date=target_date_str
-    ).values("appointment_id", "time_slot", "status", "patient_id"))
+    ).values("appointment_id", "time_slot", "status", "patient_id", "token_number"))
 
     all_slots = get_all_slots()
     board = []
+    # Every issued token stays reserved, including cancelled and No-show history.
+    used_tokens = {a["token_number"] for a in day_appts if a["token_number"] is not None}
 
     for s in all_slots:
-        active = next((a for a in day_appts if a["time_slot"] == s["time"] and a["status"] not in INACTIVE_STATUSES), None)
-        freed = bool(not active and any(a for a in day_appts if a["time_slot"] == s["time"] and a["status"] == "NO_SHOW"))
+        active = next((a for a in day_appts if a["time_slot"] == s["time"]), None)
+        freed = False
         start_m = time_to_minutes(s["time"])
         end_m = start_m + cfg["step"]
 
         if active:
             state = "booked"
-        elif target_date_str < today_str or (target_date_str == today_str and start_m <= now_minutes):
+        # Historical reservations remain blocked; started slots are never offered.
+        elif target_date_str < today_str or (target_date_str == today_str and start_m < now_minutes):
             state = "past"
         else:
             state = "free"
 
+        token = active["token_number"] if active and active["token_number"] is not None else s["token"]
+        if not active and state == "free":
+            while token in used_tokens:
+                token += 1
+            used_tokens.add(token)
         board.append({
             "time": s["time"],
             "index": s["index"],
-            "token": s["token"],
+            "token": token,
             "state": state,
             "freed": freed,
             "endM": end_m,
@@ -166,25 +233,12 @@ def get_slot_board(doctor_ident, date_obj, now=None):
 def get_next_walkin_slot(doctor_ident, now=None):
     """Finds next available walk-in slot for doctor today."""
     if now is None:
-        now = datetime.datetime.now()
-    today_str = now.strftime("%Y-%m-%d")
-    now_minutes = now.hour * 60 + now.minute
+        now = timezone.localtime()
+    today_str = now.date().isoformat()
 
     board = get_slot_board(doctor_ident, today_str, now=now)
-    slot = next((s for s in board if s["state"] != "booked" and (s["endM"] > now_minutes or s["freed"])), None)
+    slot = next((s for s in board if s["state"] == "free"), None)
     if not slot:
         return None
 
-    # Next token in doctor's queue today
-    doc = resolve_doctor(doctor_ident)
-    used_tokens = list(Appointment.objects.filter(
-        doctor=doc,
-        appointment_date=today_str
-    ).exclude(status__in=INACTIVE_STATUSES).values_list("token_number", flat=True))
-    valid_tokens = [t for t in used_tokens if t is not None]
-    next_token = max(valid_tokens, default=0) + 1
-
-    return {
-        **slot,
-        "token": next_token,
-    }
+    return slot

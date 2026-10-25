@@ -96,6 +96,14 @@ export const appointmentsApi = {
     const res = await apiClient.post(`/appointments/${id}/check-in/`);
     return res.data;
   },
+  printToken: async (id) => {
+    const res = await apiClient.post(`/appointments/${id}/print-token/`);
+    return res.data;
+  },
+  undoNoShow: async (id) => {
+    const res = await apiClient.post(`/appointments/${id}/undo-no-show/`, { arrivalConfirmed: true });
+    return res.data;
+  },
   noShow: async (id) => {
     const res = await apiClient.post(`/appointments/${id}/no-show/`);
     return res.data;
@@ -114,6 +122,10 @@ export const appointmentsApi = {
   },
   consultationFee: async (params = {}) => {
     const res = await apiClient.get('/appointments/consultation-fee/', { params });
+    return res.data;
+  },
+  bookingQuote: async (params = {}) => {
+    const res = await apiClient.get('/appointments/booking-quote/', { params });
     return res.data;
   },
 };

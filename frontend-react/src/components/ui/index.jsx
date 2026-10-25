@@ -52,7 +52,10 @@ export function Modal({ isOpen, onClose, title, size = 'md', children, footer })
           maxHeight: '90vh',
           display: 'flex',
           flexDirection: 'column',
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
           borderRadius: '16px',
+          boxShadow: '0 24px 70px rgba(15, 23, 42, 0.24)',
           animation: 'modal-in 0.2s ease-out',
         }}
       >
@@ -74,7 +77,7 @@ export function Modal({ isOpen, onClose, title, size = 'md', children, footer })
             </button>
           </div>
         )}
-        <div style={{ padding: '1.5rem', overflowY: 'auto', flex: 1 }}>
+        <div style={{ padding: '1.25rem 1.5rem', overflowY: 'auto', flex: 1, minHeight: 0 }}>
           {children}
         </div>
         {footer && (
