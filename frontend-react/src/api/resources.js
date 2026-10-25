@@ -283,6 +283,10 @@ export const labCatalogApi = {
     const res = await apiClient.get('/lab-catalog/', { params });
     return res.data;
   },
+  create: async (data) => {
+    const res = await apiClient.post('/lab-catalog/', data);
+    return res.data;
+  },
   update: async (id, data) => {
     const res = await apiClient.patch(`/lab-catalog/${encodeURIComponent(id)}/`, data);
     return res.data;

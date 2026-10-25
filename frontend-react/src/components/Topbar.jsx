@@ -24,6 +24,7 @@ export function Topbar({ onToggleSidebar }) {
   const [notifMenuOpen, setNotifMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationError, setNotificationError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -85,15 +86,17 @@ export function Topbar({ onToggleSidebar }) {
       const list = Array.isArray(data) ? data : (data?.results || []);
       setNotifications(list);
       setUnreadCount(list.filter((n) => !n.is_read && !n.isRead).length);
-    } catch {
-      // Ignore background notification fetch errors
+      setNotificationError('');
+    } catch (error) {
+      console.error('Failed to load notifications', error);
+      setNotificationError('Could not load notifications. Check your connection and try again.');
     }
   };
 
   useEffect(() => {
     if (user) {
       fetchNotifications();
-      const interval = setInterval(fetchNotifications, 30000); // 30s poll
+      const interval = setInterval(fetchNotifications, 10000);
       return () => clearInterval(interval);
     }
   }, [user]);
@@ -335,7 +338,10 @@ export function Topbar({ onToggleSidebar }) {
             className="btn btn--ghost btn--icon"
             id="notification-btn"
             aria-label="Notifications"
-            onClick={() => setNotifMenuOpen((p) => !p)}
+            onClick={() => {
+              fetchNotifications();
+              setNotifMenuOpen((isOpen) => !isOpen);
+            }}
             style={{ position: 'relative' }}
           >
             <Icon name="icon-bell" size={20} />
@@ -403,7 +409,12 @@ export function Topbar({ onToggleSidebar }) {
               </div>
 
               <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                {notifications.length === 0 ? (
+                {notificationError ? (
+                  <div role="alert" style={{ padding: '1rem', color: 'var(--danger)' }}>
+                    <p>{notificationError}</p>
+                    <button type="button" className="btn btn--secondary btn--sm" onClick={fetchNotifications}>Retry</button>
+                  </div>
+                ) : notifications.length === 0 ? (
                   <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--muted)', fontSize: '0.8125rem' }}>
                     No notifications
                   </div>
@@ -411,13 +422,25 @@ export function Topbar({ onToggleSidebar }) {
                   notifications.map((n) => {
                     const isRead = n.is_read || n.isRead;
                     return (
-                      <div
+                      <button
                         key={n.id}
-                        onClick={() => !isRead && handleMarkOneRead(n.id)}
+                        type="button"
+                        onClick={() => {
+                          if (!isRead) handleMarkOneRead(n.id);
+                          if (n.link?.startsWith('/')) {
+                            navigate(n.link);
+                            setNotifMenuOpen(false);
+                          }
+                        }}
                         style={{
+                          display: 'block',
+                          width: '100%',
                           padding: '0.75rem 1rem',
+                          border: 0,
                           borderBottom: '1px solid var(--border)',
-                          cursor: isRead ? 'default' : 'pointer',
+                          font: 'inherit',
+                          textAlign: 'left',
+                          cursor: n.link ? 'pointer' : isRead ? 'default' : 'pointer',
                           background: isRead ? 'transparent' : 'rgba(5, 102, 141, 0.1)',
                           transition: 'background 0.2s',
                         }}
@@ -428,7 +451,7 @@ export function Topbar({ onToggleSidebar }) {
                         <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: '0.25rem' }}>
                           {formatDateTime(n.created_at || n.createdAt)}
                         </div>
-                      </div>
+                      </button>
                     );
                   })
                 )}

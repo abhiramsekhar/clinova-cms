@@ -1562,6 +1562,173 @@
     padding: var(--sp-5) !important;
 }
 
+.lab-catalog-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+}
+
+.lab-catalog-form__intro {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.875rem;
+}
+
+.lab-catalog-details {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: var(--sp-3);
+    margin: 0 0 var(--sp-5);
+}
+
+.lab-catalog-details__item {
+    display: grid;
+    grid-template-columns: minmax(90px, 0.7fr) minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+.lab-catalog-details__item dt {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.lab-catalog-details__item dd {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.lab-catalog-form__error {
+    margin: 0;
+    padding: var(--sp-3);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-sm);
+    background: var(--danger-light);
+    color: var(--danger);
+    font-size: 0.875rem;
+}
+
+.lab-catalog-form__section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+}
+
+.lab-catalog-form__section-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+}
+
+.lab-catalog-form__step {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--teal-50);
+    color: var(--teal-700);
+    font-size: 0.875rem;
+    font-weight: 700;
+}
+
+.lab-catalog-form__section-heading h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 1rem;
+}
+
+.lab-catalog-form__section-heading p {
+    margin: 0.15rem 0 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.lab-catalog-form__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-3);
+}
+
+.lab-catalog-form__grid .form-group {
+    min-width: 0;
+    margin-bottom: 0 !important;
+}
+
+.lab-catalog-form__grid .form-input {
+    min-width: 0;
+}
+
+.lab-catalog-form__grid:not(.lab-catalog-form__grid--parameters) > .form-group:last-child {
+    grid-column: 1 / -1;
+}
+
+.lab-catalog-form__parameters {
+    display: grid;
+    gap: var(--sp-3);
+}
+
+.lab-catalog-form__parameter {
+    min-width: 0;
+    padding: var(--sp-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+}
+
+.lab-catalog-form__parameter-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+    color: var(--text);
+    font-size: 0.85rem;
+}
+
+.lab-catalog-form__grid--parameters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--sp-3);
+}
+
+.lab-catalog-form__grid--range-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lab-catalog-form__note {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: var(--sp-3) var(--sp-4);
+    border-left: 3px solid var(--teal-600);
+    border-radius: var(--radius-sm);
+    background: var(--teal-50);
+    color: var(--text);
+    font-size: 0.8rem;
+}
+
+.lab-catalog-form__note span {
+    color: var(--muted);
+}
+
+.lab-catalog-form__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--border);
+}
+
 .lab-table-scroll {
     width: 100%;
     overflow-x: auto;
@@ -1623,6 +1790,16 @@
     font-size: 0.8rem;
 }
 
+.lab-catalog-actions-cell {
+    white-space: nowrap;
+}
+
+.lab-catalog-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
 .lab-pagination {
     display: flex;
     align-items: center;
@@ -1630,6 +1807,14 @@
     gap: var(--sp-3);
     flex-wrap: wrap;
     padding-top: var(--sp-4);
+}
+
+@media (max-width: 640px) {
+    .lab-catalog-form__grid,
+    .lab-catalog-form__grid--parameters,
+    .lab-catalog-form__grid--range-fields {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 .lab-pagination > span,

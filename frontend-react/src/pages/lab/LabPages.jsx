@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useAuth } from '../../auth/AuthContext';
 import {
   billsApi,
   labCatalogApi,
@@ -59,12 +60,13 @@ function useLabCatalog() {
   });
 }
 
-function LabPageHeading({ title }) {
+function LabPageHeading({ title, actions }) {
   return (
     <div className="page-header" style={{ background: 'transparent', border: 'none', padding: 0 }}>
       <div className="page-header__info">
         <h1 className="text-page-title">{title}</h1>
       </div>
+      {actions && <div className="page-header__actions">{actions}</div>}
     </div>
   );
 }
@@ -173,15 +175,18 @@ function visibleByStatus(order, filter) {
 
 const priorityScore = (priority) => ({ STAT: 3, URGENT: 2, ROUTINE: 1, NORMAL: 1 }[String(priority || '').toUpperCase()] || 0);
 
-function turnaroundMinutes(order) {
+function turnaroundHours(order) {
   const startedAt = order.createdAt || order.sampleCollectedAt;
   if (!startedAt || !order.completedAt) return null;
   const elapsed = new Date(order.completedAt).getTime() - new Date(startedAt).getTime();
-  return Number.isFinite(elapsed) && elapsed >= 0 ? Math.round(elapsed / 60000) : null;
+  return Number.isFinite(elapsed) && elapsed >= 0 ? Number((elapsed / 3600000).toFixed(1)) : null;
 }
 
 function formatReferenceRange(parameter, includeUnit = true) {
   if (!parameter) return 'Not specified';
+  if (parameter.referenceText) {
+    return includeUnit && parameter.unit ? `${parameter.referenceText} ${parameter.unit}` : parameter.referenceText;
+  }
   const min = parameter.refMin ?? parameter.min;
   const max = parameter.refMax ?? parameter.max;
   let range = 'Not specified';
@@ -271,8 +276,14 @@ function ResultEntryDialog({ order, catalog, existingResult, onClose }) {
 
   const saveMutation = useMutation({
     mutationFn: (payload) => labOrdersApi.enterResult(order.id, payload),
-    onSuccess: () => {
-      toast.success('Test result saved. The order is now completed.');
+    onSuccess: (savedOrder) => {
+      if (savedOrder.isCritical && savedOrder.notificationSent) {
+        toast.success(`Critical result sent to Dr. ${savedOrder.notificationRecipient}.`);
+      } else if (savedOrder.isCritical) {
+        toast.error('Critical result saved, but no user account is linked to the prescribing doctor. Contact an administrator.');
+      } else {
+        toast.success('Test result saved. The order is now completed.');
+      }
       setConfirmSave(false);
       queryClient.invalidateQueries({ queryKey: ['labOrders'] });
       queryClient.invalidateQueries({ queryKey: ['labResults'] });
@@ -570,14 +581,14 @@ export function LabCompletedPage() {
       </div>
       <section className="glass card" style={PANEL_STYLE}>
         {rows.length === 0 ? <EmptyState title="No completed tests found" description="Completed orders appear here after a result has been saved." icon="icon-check-circle" /> : (
-          <TableFrame headers={['Completed', 'Patient', 'Test', 'TAT (mins)', 'Flag', 'Action']} minWidth={900}>
+          <TableFrame headers={['Completed', 'Patient', 'Test', 'TAT (hours)', 'Flag', 'Action']} minWidth={900}>
             {pagination.pageRows.map((order) => {
               const result = resultByTestId.get(order.id);
               return <tr key={order.id}>
                 <td>{formatDateTime(order.completedAt || result.resultDate)}</td>
                 <td><strong>{order.patientName}</strong><br /><small>{order.patientMrn || order.patientId}</small></td>
                 <td><strong>{order.testName}</strong></td>
-                <td>{turnaroundMinutes(order) ?? '—'}</td>
+                <td>{turnaroundHours(order) ?? '—'}</td>
                 <td>{result.isCritical ? <Badge variant="danger">Critical</Badge> : '—'}</td>
                 <td><button type="button" className="btn btn--secondary btn--sm" onClick={() => navigate(`/lab/results?id=${encodeURIComponent(order.id)}`)}>View Result</button></td>
               </tr>;
@@ -911,18 +922,158 @@ export function LabBillingPage() {
 }
 
 export function LabCatalogPage() {
+  const { role } = useAuth();
+  const canManageCatalog = role === 'LAB_TECH';
+  const queryClient = useQueryClient();
+  const toast = useToast();
   const [search, setSearch] = useState('');
   const [viewing, setViewing] = useState(null);
+  const [editor, setEditor] = useState(null);
+  const [catalogForm, setCatalogForm] = useState({
+    name: '',
+    code: '',
+    category: '',
+    sampleType: '',
+    turnaroundHrs: '4',
+    description: '',
+    parameters: [{ name: '', unit: '', refMin: '', refMax: '', criticalMin: '', criticalMax: '' }],
+  });
+  const [rangeForm, setRangeForm] = useState([]);
+  const [formError, setFormError] = useState('');
   const { data: catalog = [], isLoading, error, refetch } = useLabCatalog();
   const rows = useMemo(() => catalog.filter((test) => [test.name, test.testName, test.code, test.category].some((value) => String(value || '').toLowerCase().includes(search.trim().toLowerCase()))), [catalog, search]);
   const pagination = usePaginatedRows(rows);
+
+  const invalidateCatalog = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['labCatalog'] }),
+      queryClient.invalidateQueries({ queryKey: ['doctorLabCatalog'] }),
+      queryClient.invalidateQueries({ queryKey: ['adminLabCatalog'] }),
+    ]);
+  };
+  const createMutation = useMutation({
+    mutationFn: (payload) => labCatalogApi.create(payload),
+    onSuccess: async () => {
+      toast.success('Lab test added to the catalog.');
+      setEditor(null);
+      setFormError('');
+      await invalidateCatalog();
+    },
+    onError: (saveError) => setFormError(saveError?.response?.data?.detail || JSON.stringify(saveError?.response?.data || 'Unable to add the lab test.')),
+  });
+  const updateRangesMutation = useMutation({
+    mutationFn: ({ id, parameters }) => labCatalogApi.update(id, { parameters }),
+    onSuccess: async () => {
+      toast.success('Test reference ranges updated.');
+      setEditor(null);
+      setFormError('');
+      await invalidateCatalog();
+    },
+    onError: (saveError) => setFormError(saveError?.response?.data?.detail || JSON.stringify(saveError?.response?.data || 'Unable to update test ranges.')),
+  });
+
+  const openCreateEditor = () => {
+    setCatalogForm({
+      name: '',
+      code: '',
+      category: '',
+      sampleType: '',
+      turnaroundHrs: '4',
+      description: '',
+      parameters: [{ name: '', unit: '', refMin: '', refMax: '', criticalMin: '', criticalMax: '' }],
+    });
+    setFormError('');
+    setEditor({ mode: 'create' });
+  };
+
+  const openRangeEditor = (test) => {
+    setRangeForm((test.parameters || []).map((parameter) => ({
+      name: parameter.name,
+      refMin: String(parameter.refMin ?? parameter.min ?? ''),
+      refMax: String(parameter.refMax ?? parameter.max ?? ''),
+      criticalMin: String(parameter.criticalMin ?? parameter.criticalLow ?? ''),
+      criticalMax: String(parameter.criticalMax ?? parameter.criticalHigh ?? ''),
+    })));
+    setFormError('');
+    setEditor({ mode: 'ranges', test });
+  };
+
+  const parseBounds = (parameter) => {
+    const parsed = {};
+    for (const key of ['refMin', 'refMax', 'criticalMin', 'criticalMax']) {
+      const raw = String(parameter[key] ?? '').trim();
+      if (!raw) {
+        parsed[key] = null;
+        continue;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value)) throw new Error(`${parameter.name || 'Parameter'}: ${key} must be a valid number.`);
+      parsed[key] = value;
+    }
+    if (parsed.refMin != null && parsed.refMax != null && parsed.refMin > parsed.refMax) {
+      throw new Error(`${parameter.name || 'Parameter'}: reference minimum cannot exceed maximum.`);
+    }
+    return parsed;
+  };
+
+  const submitNewTest = (event) => {
+    event.preventDefault();
+    setFormError('');
+    const turnaroundHrs = Number(catalogForm.turnaroundHrs);
+    if (!catalogForm.name.trim()) return setFormError('Enter a test name.');
+    if (!Number.isInteger(turnaroundHrs) || turnaroundHrs < 1) return setFormError('Turnaround time must be at least one hour.');
+    if (!catalogForm.parameters.length || catalogForm.parameters.some((parameter) => !parameter.name.trim())) {
+      return setFormError('Add at least one named test parameter.');
+    }
+    const parameterNames = catalogForm.parameters.map((parameter) => parameter.name.trim().toLowerCase());
+    if (new Set(parameterNames).size !== parameterNames.length) return setFormError('Parameter names must be unique.');
+    let parameters;
+    try {
+      parameters = catalogForm.parameters.map((parameter) => ({
+        name: parameter.name.trim(),
+        unit: parameter.unit.trim(),
+        dataType: 'number',
+        required: true,
+        ...parseBounds(parameter),
+      }));
+    } catch (validationError) {
+      return setFormError(validationError.message);
+    }
+    createMutation.mutate({
+      name: catalogForm.name.trim(),
+      code: catalogForm.code.trim() || null,
+      category: catalogForm.category.trim(),
+      sampleType: catalogForm.sampleType.trim(),
+      turnaroundHrs,
+      description: catalogForm.description.trim(),
+      parameters,
+    });
+  };
+
+  const submitRangeUpdate = (event) => {
+    event.preventDefault();
+    setFormError('');
+    let parameters;
+    try {
+      parameters = rangeForm.map((parameter) => ({
+        name: parameter.name,
+        ...parseBounds(parameter),
+      }));
+    } catch (validationError) {
+      return setFormError(validationError.message);
+    }
+    updateRangesMutation.mutate({ id: editor.test.id, parameters });
+  };
 
   if (isLoading) return <LoadingState message="Loading test catalog…" />;
   if (error) return <ErrorState title="Failed to load test catalog" error={error} onRetry={refetch} />;
 
   return (
     <div className="lab-module-page">
-      <LabPageHeading title="Test Catalog" />
+      <LabPageHeading
+        title="Test Catalog"
+        actions={canManageCatalog && <button type="button" className="btn btn--primary" onClick={openCreateEditor}>Add Lab Test</button>}
+      />
       <div className="glass card lab-filter-panel" style={PANEL_STYLE}>
         <label className="lab-filter-panel__search">
           <Icon name="icon-search" size={16} />
@@ -931,26 +1082,148 @@ export function LabCatalogPage() {
       </div>
       <section className="glass card" style={PANEL_STYLE}>
         {rows.length === 0 ? <EmptyState title="No catalog tests found" description="Try another test name or code." icon="icon-flask" /> : (
-          <TableFrame headers={['Code', 'Test name / category', 'Price', 'Parameters', 'Action']} minWidth={700}>
+          <TableFrame headers={['Code', 'Test name / category', 'Price', 'Parameters', 'Action']} minWidth={canManageCatalog ? 850 : 700}>
             {pagination.pageRows.map((test) => <tr key={test.id}>
               <td><strong>{test.code || '—'}</strong></td><td><strong>{test.name || test.testName}</strong><br /><small>{test.category || '—'}</small></td>
               <td>{Format.money(test.price)}</td><td>{test.parameters?.length || 0} parameter(s)</td>
-              <td><button type="button" className="btn btn--secondary btn--sm" onClick={() => setViewing(test)}>View Details</button></td>
+              <td className="lab-catalog-actions-cell">
+                <div className="lab-catalog-actions">
+                  <button type="button" className="btn btn--secondary btn--sm" onClick={() => setViewing(test)}>View Details</button>
+                  {canManageCatalog && test.parameters?.length > 0 && <button type="button" className="btn btn--secondary btn--sm" onClick={() => openRangeEditor(test)}>Edit Ranges</button>}
+                </div>
+              </td>
             </tr>)}
           </TableFrame>
         )}
         <Pagination {...pagination} />
-        <p style={{ color: 'var(--muted)', fontSize: '0.8rem', margin: '1rem 0 0' }}>Catalog edits are restricted to Admin accounts.</p>
+        {canManageCatalog && <p style={{ color: 'var(--muted)', fontSize: '0.8rem', margin: '1rem 0 0' }}>Lab Techs can add tests and edit reference/critical ranges. New tests start with a price of ₹0; an Admin can set the billing price.</p>}
       </section>
+      {editor?.mode === 'create' && <Modal isOpen onClose={() => { if (!createMutation.isPending) setEditor(null); }} title="Add Lab Test" size="lg">
+        <form className="lab-catalog-form" onSubmit={submitNewTest}>
+          <p className="lab-catalog-form__intro">Enter the test details and reporting ranges used to interpret results.</p>
+          {formError && <p className="lab-catalog-form__error" role="alert">{formError}</p>}
+          <section className="lab-catalog-form__section" aria-labelledby="lab-test-details-heading">
+            <div className="lab-catalog-form__section-heading">
+              <span className="lab-catalog-form__step">1</span>
+              <div>
+                <h3 id="lab-test-details-heading">Test details</h3>
+                <p>Basic identification and specimen information</p>
+              </div>
+            </div>
+            <div className="lab-catalog-form__grid">
+              <FormField label="Test name" required><input className="form-input" placeholder="e.g. Serum calcium" value={catalogForm.name} onChange={(event) => setCatalogForm((current) => ({ ...current, name: event.target.value }))} required /></FormField>
+              <FormField label="Test code"><input className="form-input" placeholder="e.g. CA" value={catalogForm.code} onChange={(event) => setCatalogForm((current) => ({ ...current, code: event.target.value }))} /></FormField>
+              <FormField label="Category"><input className="form-input" placeholder="e.g. Biochemistry" value={catalogForm.category} onChange={(event) => setCatalogForm((current) => ({ ...current, category: event.target.value }))} /></FormField>
+              <FormField label="Sample type"><input className="form-input" placeholder="e.g. Serum" value={catalogForm.sampleType} onChange={(event) => setCatalogForm((current) => ({ ...current, sampleType: event.target.value }))} /></FormField>
+              <FormField label="Turnaround time (hours)" required><input className="form-input" type="number" min="1" step="1" value={catalogForm.turnaroundHrs} onChange={(event) => setCatalogForm((current) => ({ ...current, turnaroundHrs: event.target.value }))} required /></FormField>
+              <FormField label="Description"><input className="form-input" placeholder="Optional clinical or processing notes" value={catalogForm.description} onChange={(event) => setCatalogForm((current) => ({ ...current, description: event.target.value }))} /></FormField>
+            </div>
+          </section>
+          <section className="lab-catalog-form__section" aria-labelledby="lab-parameters-heading">
+            <div className="lab-catalog-form__section-heading">
+              <span className="lab-catalog-form__step">2</span>
+              <div>
+                <h3 id="lab-parameters-heading">Parameters & reference ranges</h3>
+                <p>Set units and normal or critical limits for reported values</p>
+              </div>
+            </div>
+            <div className="lab-catalog-form__parameters">
+              {catalogForm.parameters.map((parameter, index) => (
+                <section key={`new-parameter-${index}`} className="lab-catalog-form__parameter">
+                  <div className="lab-catalog-form__parameter-heading">
+                    <strong>Parameter {String(index + 1).padStart(2, '0')}</strong>
+                    {catalogForm.parameters.length > 1 && <button type="button" className="btn btn--ghost btn--sm" onClick={() => setCatalogForm((current) => ({ ...current, parameters: current.parameters.filter((_, itemIndex) => itemIndex !== index) }))}>Remove</button>}
+                  </div>
+                  <div className="lab-catalog-form__grid lab-catalog-form__grid--parameters">
+                    <FormField label="Parameter name" required><input className="form-input" placeholder="e.g. Calcium" value={parameter.name} onChange={(event) => setCatalogForm((current) => ({ ...current, parameters: current.parameters.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item) }))} required /></FormField>
+                    <FormField label="Unit"><input className="form-input" placeholder="e.g. mg/dL" value={parameter.unit} onChange={(event) => setCatalogForm((current) => ({ ...current, parameters: current.parameters.map((item, itemIndex) => itemIndex === index ? { ...item, unit: event.target.value } : item) }))} /></FormField>
+                    {[
+                      ['refMin', 'Reference minimum', 'No lower limit'],
+                      ['refMax', 'Reference maximum', 'No upper limit'],
+                      ['criticalMin', 'Critical low', 'Optional'],
+                      ['criticalMax', 'Critical high', 'Optional'],
+                    ].map(([key, label, placeholder]) => <FormField key={key} label={label}><input className="form-input" type="number" step="any" placeholder={placeholder} value={parameter[key]} onChange={(event) => setCatalogForm((current) => ({ ...current, parameters: current.parameters.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: event.target.value } : item) }))} /></FormField>)}
+                  </div>
+                </section>
+              ))}
+            </div>
+            <button type="button" className="btn btn--secondary btn--sm" onClick={() => setCatalogForm((current) => ({ ...current, parameters: [...current.parameters, { name: '', unit: '', refMin: '', refMax: '', criticalMin: '', criticalMax: '' }] }))}>+ Add parameter</button>
+          </section>
+          <div className="lab-catalog-form__note"><strong>Billing price</strong><span>New tests are added at ₹0. An Admin can set the billing price later.</span></div>
+          <div className="lab-catalog-form__actions">
+            <button type="button" className="btn btn--secondary" onClick={() => setEditor(null)} disabled={createMutation.isPending}>Cancel</button>
+            <button type="submit" className="btn btn--primary" disabled={createMutation.isPending}>{createMutation.isPending ? 'Saving…' : 'Add Test'}</button>
+          </div>
+        </form>
+      </Modal>}
+      {editor?.mode === 'ranges' && <Modal isOpen onClose={() => { if (!updateRangesMutation.isPending) setEditor(null); }} title={`Edit Ranges · ${editor.test.name || editor.test.testName}`} size="lg">
+        <form className="lab-catalog-form" onSubmit={submitRangeUpdate}>
+          <p className="lab-catalog-form__intro">Review and update the reporting limits for each parameter in this test.</p>
+          {formError && <p className="lab-catalog-form__error" role="alert">{formError}</p>}
+          <section className="lab-catalog-form__section" aria-labelledby="edit-ranges-heading">
+            <div className="lab-catalog-form__section-heading">
+              <span className="lab-catalog-form__step">1</span>
+              <div>
+                <h3 id="edit-ranges-heading">Reference & critical ranges</h3>
+                <p>Blank limits are not applied when results are flagged</p>
+              </div>
+            </div>
+            <div className="lab-catalog-form__parameters">
+              {rangeForm.map((parameter, index) => (
+                <section key={parameter.name} className="lab-catalog-form__parameter">
+                  <div className="lab-catalog-form__parameter-heading">
+                    <strong>{parameter.name}</strong>
+                    {editor.test.parameters?.[index]?.unit && <span>{editor.test.parameters[index].unit}</span>}
+                  </div>
+                  <div className="lab-catalog-form__grid lab-catalog-form__grid--range-fields">
+                    {[
+                      ['refMin', 'Reference minimum', 'No lower limit'],
+                      ['refMax', 'Reference maximum', 'No upper limit'],
+                      ['criticalMin', 'Critical low', 'Optional'],
+                      ['criticalMax', 'Critical high', 'Optional'],
+                    ].map(([key, label, placeholder]) => <FormField key={key} label={label}><input className="form-input" type="number" step="any" placeholder={placeholder} value={parameter[key]} onChange={(event) => setRangeForm((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: event.target.value } : item))} /></FormField>)}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </section>
+          <div className="lab-catalog-form__note"><strong>Range-only access</strong><span>Test details, parameter names, units, and billing price will not be changed.</span></div>
+          <div className="lab-catalog-form__actions">
+            <button type="button" className="btn btn--secondary" onClick={() => setEditor(null)} disabled={updateRangesMutation.isPending}>Cancel</button>
+            <button type="submit" className="btn btn--primary" disabled={updateRangesMutation.isPending}>{updateRangesMutation.isPending ? 'Saving…' : 'Save Ranges'}</button>
+          </div>
+        </form>
+      </Modal>}
       {viewing && <Modal isOpen onClose={() => setViewing(null)} title={viewing.name || viewing.testName}>
-        <dl style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, 0.6fr) 1fr', gap: '0.65rem' }}>
-          <dt>Code</dt><dd>{viewing.code || '—'}</dd><dt>Category</dt><dd>{viewing.category || '—'}</dd><dt>Specimen</dt><dd>{viewing.sampleType || '—'}</dd><dt>Price</dt><dd>{Format.money(viewing.price)}</dd><dt>Turnaround</dt><dd>{viewing.turnaroundHrs ?? '—'} hours</dd><dt>Status</dt><dd>{viewing.isActive === false ? 'Inactive' : 'Active'}</dd>
+        <dl className="lab-catalog-details">
+          {[
+            ['Code', viewing.code || '—'],
+            ['Category', viewing.category || '—'],
+            ['Specimen', viewing.sampleType || '—'],
+            ['Price', Format.money(viewing.price)],
+            ['Turnaround', `${viewing.turnaroundHrs ?? '—'} hours`],
+            ['Status', viewing.isActive === false ? 'Inactive' : 'Active'],
+          ].map(([label, value]) => (
+            <div className="lab-catalog-details__item" key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
         </dl>
         {viewing.description && <p>{viewing.description}</p>}
         {Array.isArray(viewing.parameters) && viewing.parameters.length > 0 && <>
           <h3>Defined parameters and catalog ranges</h3>
-          <TableFrame headers={['Parameter', 'Unit', 'Reference range']} minWidth={430}>
-            {viewing.parameters.map((parameter) => <tr key={parameter.name}><td>{parameter.name}</td><td>{parameter.unit || '—'}</td><td>{formatReferenceRange(parameter, false)}</td></tr>)}
+          <TableFrame headers={['Parameter', 'Unit', 'Reference range', 'Critical range']} minWidth={600}>
+            {viewing.parameters.map((parameter) => <tr key={parameter.name}>
+              <td>{parameter.name}</td>
+              <td>{parameter.unit || '—'}</td>
+              <td>{formatReferenceRange(parameter, false)}</td>
+              <td>
+                {parameter.criticalMin != null || parameter.criticalMax != null
+                  ? `${parameter.criticalMin != null ? `≤${parameter.criticalMin}` : ''}${parameter.criticalMin != null && parameter.criticalMax != null ? ' or ' : ''}${parameter.criticalMax != null ? `≥${parameter.criticalMax}` : ''}`
+                  : 'Not specified'}
+              </td>
+            </tr>)}
           </TableFrame>
         </>}
       </Modal>}
