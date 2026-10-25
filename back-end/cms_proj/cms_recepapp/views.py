@@ -32,6 +32,7 @@ from .serializers import (
 )
 from .services import (
     resolve_doctor,
+    receptionist_bills,
     get_slot_board,
     get_next_walkin_slot,
     get_consultation_fee,
@@ -844,6 +845,9 @@ class BillViewSet(viewsets.ModelViewSet):
             "items", "payments", "payments__received_by"
         ).all().order_by("-created_at")
 
+        if getattr(getattr(self.request.user, "role", None), "role_id", None) == "RECEPTIONIST":
+            qs = receptionist_bills(qs)
+
         patient_param = self.request.query_params.get("patient") or self.request.query_params.get("patientId")
         if patient_param:
             qs = qs.filter(patient__patient_id=patient_param)
@@ -1052,6 +1056,8 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = Payment.objects.select_related("bill", "bill__patient", "received_by").all().order_by("-created_at")
+        if getattr(getattr(self.request.user, "role", None), "role_id", None) == "RECEPTIONIST":
+            qs = qs.filter(bill_id__in=receptionist_bills(Bill.objects.all()).values("pk"))
         bill_param = self.request.query_params.get("bill") or self.request.query_params.get("billId")
         if bill_param:
             qs = qs.filter(bill__bill_id=bill_param)

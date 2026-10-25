@@ -23,6 +23,14 @@ DEFAULT_CONSULTATION_FEE_PAISE = 50000  # ₹500
 DEFAULT_REGISTRATION_FEE_PAISE = 20000  # ₹200
 
 
+def receptionist_bills(queryset):
+    """Only invoices made entirely of registration and consultation charges."""
+    allowed = [BillItem.ItemType.REGISTRATION, BillItem.ItemType.CONSULTATION]
+    eligible = BillItem.objects.filter(item_type__in=allowed).values("bill_id")
+    other_charges = BillItem.objects.exclude(item_type__in=allowed).values("bill_id")
+    return queryset.filter(pk__in=eligible).exclude(pk__in=other_charges)
+
+
 @transaction.atomic
 def mark_expired_scheduled_appointments(request=None, now=None):
     """Persist prior-booking NO_SHOW after the configured arrival grace period."""

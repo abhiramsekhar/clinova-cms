@@ -183,9 +183,9 @@ class ReceptionGroupTests(APITestCase):
         self.bill_item_2 = BillItem.objects.create(
             bill_item_id="bill-001-item-2",
             bill=self.bill,
-            item_type=BillItem.ItemType.LAB_TEST,
-            source_id="lab-01",
-            description="CBC Lab Test",
+            item_type=BillItem.ItemType.CONSULTATION,
+            source_id="appt-001",
+            description="Additional consultation charge",
             amount=Decimal("350.00"),
         )
         self.payment = Payment.objects.create(
@@ -1288,6 +1288,37 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.patient.refresh_from_db()
         self.assertEqual(self.patient.allergies, previous_allergies)
+
+
+    def test_receptionist_only_sees_registration_consultation_bills(self):
+        admin_staff = Staff.objects.create(staff_id="staff-admin-b", name="Billing Admin", email="bill-admin@test.local", role=self.role_admin)
+        self.user_admin = User.objects.create(user_id="user-admin-bill", username="admin-bill", staff=admin_staff, role=self.role_admin, is_active=True)
+        self.settle_appointment_bill()
+        headers = self.auth_headers(self.user_rec)
+        hidden = []
+        for types in [["LAB_TEST"], ["PHARMACY"], ["MEDICINE"], ["CONSULTATION", "LAB_TEST"], []]:
+            bill = Bill.objects.create(patient=self.patient, bill_date=self.today, total_amount=Decimal("100"))
+            for charge in types:
+                BillItem.objects.create(bill=bill, item_type=charge, description=charge, amount=Decimal("100"))
+            payment = Payment.objects.create(bill=bill, amount_paid=Decimal("100"), payment_date=self.today, payment_method="CASH")
+            hidden.append((bill.pk, payment.pk))
+        registration = Bill.objects.create(patient=self.patient, bill_date=self.today, total_amount=Decimal("200"))
+        BillItem.objects.create(bill=registration, item_type="REGISTRATION", description="Registration", amount=Decimal("200"))
+        Payment.objects.create(bill=registration, amount_paid=Decimal("200"), payment_date=self.today, payment_method="CASH")
+        for params in [{}, {"patient": self.patient.pk}, {"appointment_date": self.today.isoformat()}, {"paid_date": self.today.isoformat()}]:
+            response = self.client.get("/api/bills/", params, **headers)
+            self.assertEqual(response.status_code, 200)
+            ids = {bill["id"] for bill in response.data["results"]}
+            self.assertIn(self.bill.pk, ids)
+            self.assertTrue(ids.isdisjoint(bill_id for bill_id, _ in hidden))
+        response = self.client.get("/api/bills/", **headers)
+        self.assertIn(registration.pk, [bill["id"] for bill in response.data["results"]])
+        for bill_id, payment_id in hidden:
+            self.assertEqual(self.client.get(f"/api/bills/{bill_id}/", **headers).status_code, 404)
+            self.assertEqual(self.client.get(f"/api/bills/{bill_id}/payments/", **headers).status_code, 404)
+            self.assertEqual(self.client.get(f"/api/payments/{payment_id}/", **headers).status_code, 404)
+            self.assertEqual(self.client.get(f"/api/bills/{bill_id}/", **self.auth_headers(self.user_lab)).status_code, 200)
+            self.assertEqual(self.client.get(f"/api/bills/{bill_id}/", **self.auth_headers(self.user_admin)).status_code, 200)
 
 
 class ConcurrentReceptionBookingTests(TransactionTestCase):
