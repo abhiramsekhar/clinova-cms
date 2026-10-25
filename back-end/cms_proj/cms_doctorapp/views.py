@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 
 from cms_backendapp.permissions import IsRole
-from cms_backendapp.models import Staff, Department, LabTestCatalog, Notification, AuditLog
+from cms_backendapp.models import Staff, User, Department, LabTestCatalog, Notification, AuditLog
 from cms_backendapp.audit import log_audit
 from cms_recepapp.models import Patient, Appointment, Bill, BillItem
 from cms_pharmapp.models import Medicine
@@ -863,15 +863,68 @@ class LabOrderViewSet(viewsets.ModelViewSet):
             order.technician = tech
         order.save(update_fields=["status", "completed_at", "technician", "updated_at"])
 
-        if is_critical and order.doctor and hasattr(order.doctor.staff, "user_account"):
-            doc_user = getattr(order.doctor.staff, "user_account", None)
+        notification_recipient = None
+        if is_critical and order.doctor:
+            doc_user = User.objects.filter(staff=order.doctor.staff).first()
             if doc_user:
+                if isinstance(stored_results, list):
+                    result_rows = stored_results
+                elif isinstance(stored_results, dict):
+                    result_rows = [
+                        {"parameter": name, "value": value}
+                        for name, value in stored_results.items()
+                    ]
+                else:
+                    result_rows = []
+                critical_rows = [
+                    result for result in result_rows
+                    if isinstance(result, dict) and str(result.get("flag", "")).startswith("critical_")
+                ]
+                alert_rows = critical_rows or [
+                    result for result in result_rows if isinstance(result, dict)
+                ]
+                critical_detail_parts = []
+                for result in alert_rows:
+                    detail = f"{result.get('parameter', 'Result')}: {result.get('value', '')}"
+                    if result.get("unit"):
+                        detail += f" {result['unit']}"
+                    if result.get("flag"):
+                        detail += f" ({str(result['flag']).replace('critical_', 'critical ')})"
+                    critical_detail_parts.append(detail)
+                critical_details = "; ".join(critical_detail_parts)
+                patient_identifier = f" (MRN: {order.patient.mrn})" if order.patient.mrn else ""
+                detail_text = f" Critical values: {critical_details}." if critical_details else ""
+                prescribing_doctor = order.doctor.staff.name
                 Notification.objects.create(
                     notification_type="LAB_RESULT",
                     title="Critical Lab Result",
-                    message=f"Patient {order.patient.name} ({order.patient.mrn}) has critical {order.test_catalog.test_name} result.",
+                    message=(
+                        f"Critical {order.test_catalog.test_name} result: patient "
+                        f"{order.patient.name}{patient_identifier} has a critical result for order "
+                        f"{order.test_id}.{detail_text} Sent to prescribing doctor {prescribing_doctor}."
+                    ),
                     target_user=doc_user,
                     link="/doctor/lab-orders",
                 )
+                tech_user = User.objects.filter(staff=tech).first() if tech else None
+                if not tech_user and _role_id(request.user) == "LAB_TECH":
+                    tech_user = request.user
+                if tech_user:
+                    Notification.objects.create(
+                        notification_type="LAB_RESULT_SENT",
+                        title="Critical Result Sent to Doctor",
+                        message=(
+                            f"Critical {order.test_catalog.test_name} result for "
+                            f"{order.patient.name}{patient_identifier} was sent to prescribing "
+                            f"doctor {prescribing_doctor}. Critical values: "
+                            f"{critical_details or 'See the saved result'}."
+                        ),
+                        target_user=tech_user,
+                        link="/lab/completed-tests",
+                    )
+                notification_recipient = order.doctor.staff.name
 
-        return Response(self.get_serializer(order).data, status=status.HTTP_200_OK)
+        response_data = self.get_serializer(order).data
+        response_data["notificationSent"] = notification_recipient is not None
+        response_data["notificationRecipient"] = notification_recipient
+        return Response(response_data, status=status.HTTP_200_OK)

@@ -359,6 +359,8 @@ class DoctorDomainTests(APITestCase):
         self.assertEqual(res_res.status_code, status.HTTP_200_OK)
         self.assertEqual(res_res.data["status"], "COMPLETED")
         self.assertTrue(res_res.data["isCritical"])
+        self.assertTrue(res_res.data["notificationSent"])
+        self.assertEqual(res_res.data["notificationRecipient"], self.staff_doc.name)
         stored_result = LabTestResult.objects.get(test_id=order_id)
         self.assertEqual(stored_result.results[0]["parameter"], "Sodium")
         self.assertEqual(stored_result.results[0]["flag"], "critical_low")
@@ -371,11 +373,31 @@ class DoctorDomainTests(APITestCase):
         ).first()
         self.assertIsNotNone(notif)
         self.assertIn("critical", notif.message.lower())
+        self.assertIn(self.patient.name, notif.message)
+        self.assertIn(self.patient.mrn, notif.message)
+        self.assertIn(order_id, notif.message)
+        self.assertIn("Sodium: 125", notif.message)
+        self.assertIn(self.staff_doc.name, notif.message)
+        self.assertIn("Sent to prescribing doctor", notif.message)
+        self.assertEqual(notif.target_user, self.user_doc)
+        self.assertEqual(notif.link, "/doctor/lab-orders")
         doctor_notifications_response = self.client.get("/api/notifications/", **headers_doc)
         self.assertEqual(doctor_notifications_response.status_code, status.HTTP_200_OK)
         self.assertTrue(any(
             notification["id"] == notif.notification_id
             for notification in doctor_notifications_response.data["results"]
+        ))
+        tech_notification = Notification.objects.get(
+            target_user=self.user_lab,
+            notification_type="LAB_RESULT_SENT",
+        )
+        self.assertIn("was sent to prescribing doctor", tech_notification.message)
+        self.assertIn(self.staff_doc.name, tech_notification.message)
+        lab_notifications_response = self.client.get("/api/notifications/", **headers_lab)
+        self.assertEqual(lab_notifications_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(
+            notification["id"] == tech_notification.notification_id
+            for notification in lab_notifications_response.data["results"]
         ))
 
     def test_lab_status_transition_and_result_permissions(self):

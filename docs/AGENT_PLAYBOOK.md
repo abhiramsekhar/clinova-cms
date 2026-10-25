@@ -88,7 +88,7 @@ Foundation first: F0 api client+auth+session timeout, F1 ui components, F2 layou
 | L2 | lab/test-queue | priority-sorted queue (STAT/URGENT/ROUTINE); Collect Sample → Start Processing → Enter Result (dynamic fields per test with reference ranges and unit; auto critical/abnormal flag) → confirm → Complete | H |
 | L3 | lab/completed-tests | completed list with turnaround times | L |
 | L4 | lab/results | finalized printable lab report (Print Report) | M |
-| L5 | lab/catalog | read-only test catalog, View Details with reference ranges | L |
+| L5 | lab/catalog | searchable test catalog, View Details, add tests and edit existing reference/critical ranges | L |
 | L6 | lab/billing | lab bills list; Receive Payment; Receipt; Print/Save as PDF | M |
 
 ### Admin

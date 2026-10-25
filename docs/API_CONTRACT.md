@@ -169,8 +169,9 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
 | GET | `/lab-catalog/` | ADMIN, DOCTOR, LAB_TECH, RECEPTIONIST | Paginated list; filters: `?is_active=true|false&category=`. Response fields include name, code, category, sampleType, parameters, turnaroundHrs, description, price (integer paise), and isActive. |
-| PATCH | `/lab-catalog/{id}/` | ADMIN | Serializer accepts catalog fields including price (integer paise). The Admin UI follows legacy scope and edits price only. |
-| POST/PUT/DELETE | `/lab-catalog/`, `/lab-catalog/{id}/` | ADMIN | Technically exposed by the generic viewset; not presented in the Admin UI because the legacy Admin workflow is price-only. |
+| POST | `/lab-catalog/` | ADMIN, LAB_TECH | Creates a test with name, code, category, sample type, turnaround, description and parameter ranges. Lab Tech-created tests start at price 0; Admin can set the billing price through the Admin catalog endpoint. |
+| PATCH | `/lab-catalog/{id}/` | ADMIN, LAB_TECH | Lab Tech may submit only `parameters`, and may change only reference/critical ranges for existing parameters. Admin catalog edits use `/admin/lab-catalog/`. |
+| PUT/DELETE | `/lab-catalog/{id}/` | ADMIN | Lab Techs cannot replace or delete catalog entries. |
 
 ---
 
@@ -271,7 +272,7 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 | **Lab / Test Queue** | `GET /lab-orders/`, `POST /lab-orders/{id}/update-status/`, `POST /lab-orders/{id}/enter-result/` |
 | **Lab / Results** | `GET /lab-orders/`, `GET /lab-results/`, `POST /lab-orders/{id}/enter-result/` |
 | **Lab / Completed Tests** | `GET /lab-orders/`, `GET /lab-results/` |
-| **Lab / Catalog** | `GET /lab-catalog/` |
+| **Lab / Catalog** | `GET /lab-catalog/`, `POST /lab-catalog/`, range-only `PATCH /lab-catalog/{id}/` |
 | **Lab / Billing** | `GET /bills/` (filter client-side to `LAB_TEST` items); payment write endpoints are not available to LAB_TECH |
 | **Admin / Dashboard** | `GET /dashboard/admin/` |
 | **Admin / Staff** | `GET /staff/`, `POST /staff/`, deactivate |

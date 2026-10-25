@@ -7,6 +7,7 @@ ViewSets for Lab domain:
 
 from rest_framework import viewsets, status
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
 
 from cms_backendapp.permissions import IsRole
 from cms_backendapp.models import LabTestCatalog
@@ -28,7 +29,18 @@ class LabCatalogViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:
             return [IsRole("ADMIN", "DOCTOR", "LAB_TECH", "RECEPTIONIST")()]
+        if self.action in ["create", "partial_update"]:
+            return [IsRole("ADMIN", "LAB_TECH")()]
         return [IsRole("ADMIN")()]
+
+    def partial_update(self, request, *args, **kwargs):
+        role = getattr(getattr(request.user, "role", None), "role_id", "")
+        if role == "LAB_TECH" and set(request.data.keys()) != {"parameters"}:
+            return Response(
+                {"detail": "Lab technicians may only update test reference ranges.", "code": "PERMISSION_DENIED"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().partial_update(request, *args, **kwargs)
 
     def get_queryset(self):
         qs = LabTestCatalog.objects.all().order_by("test_name")
