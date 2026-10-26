@@ -14,6 +14,7 @@ from .views import (
     SupplierViewSet,
     PurchaseOrderViewSet,
     StockLedgerViewSet,
+    PharmacyPrescriptionDispenseView,
 )
 
 router = DefaultRouter()
@@ -23,5 +24,10 @@ router.register(r"purchase-orders", PurchaseOrderViewSet, basename="purchase-ord
 router.register(r"stock-ledger", StockLedgerViewSet, basename="stock-ledger")
 
 urlpatterns = [
+    path(
+        "pharmacy-prescriptions/<str:prescription_id>/dispense/",
+        PharmacyPrescriptionDispenseView.as_view(),
+        name="pharmacy-prescription-dispense",
+    ),
     path("", include(router.urls)),
 ]

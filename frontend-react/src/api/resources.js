@@ -185,8 +185,29 @@ export const medicinesApi = {
     const res = await apiClient.get('/medicines/', { params });
     return res.data;
   },
+<<<<<<< Updated upstream
   get: async (id) => {
     const res = await apiClient.get(`/medicines/${encodeURIComponent(id)}/`);
+=======
+  create: async (data) => {
+    const res = await apiClient.post('/medicines/', data);
+    return res.data;
+  },
+  update: async (id, data) => {
+    const res = await apiClient.patch(`/medicines/${encodeURIComponent(id)}/`, data);
+    return res.data;
+  },
+  restock: async (id, data) => {
+    const res = await apiClient.post(`/medicines/${encodeURIComponent(id)}/restock/`, data);
+    return res.data;
+  },
+  toggleActive: async (id) => {
+    const res = await apiClient.post(`/medicines/${encodeURIComponent(id)}/toggle-active/`);
+    return res.data;
+  },
+  stockAlerts: async () => {
+    const res = await apiClient.get('/medicines/stock-alerts/');
+>>>>>>> Stashed changes
     return res.data;
   },
 };
@@ -325,6 +346,14 @@ export const suppliersApi = {
     const res = await apiClient.get('/suppliers/', { params });
     return res.data;
   },
+  create: async (data) => {
+    const res = await apiClient.post('/suppliers/', data);
+    return res.data;
+  },
+  update: async (id, data) => {
+    const res = await apiClient.patch(`/suppliers/${encodeURIComponent(id)}/`, data);
+    return res.data;
+  },
   rates: async (id) => {
     const res = await apiClient.get(`/suppliers/${encodeURIComponent(id)}/rates/`);
     return res.data;
@@ -338,6 +367,21 @@ export const purchaseOrdersApi = {
   },
   get: async (id) => {
     const res = await apiClient.get(`/purchase-orders/${encodeURIComponent(id)}/`);
+    return res.data;
+  },
+  create: async (data) => {
+    const res = await apiClient.post('/purchase-orders/', data);
+    return res.data;
+  },
+  receive: async (id, data) => {
+    const res = await apiClient.post(`/purchase-orders/${encodeURIComponent(id)}/receive/`, data);
+    return res.data;
+  },
+};
+
+export const stockLedgerApi = {
+  list: async (params = {}) => {
+    const res = await apiClient.get('/stock-ledger/', { params });
     return res.data;
   },
 };

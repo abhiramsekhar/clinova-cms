@@ -25,8 +25,11 @@ class Medicine(models.Model):
                                       validators=[MinValueValidator(0)])
     selling_price = models.DecimalField(max_digits=10, decimal_places=2, default=0,
                                          validators=[MinValueValidator(0)])
+    # stock_quantity represents Pharmacy Counter stock.
     stock_quantity = models.IntegerField(default=0, validators=[MinValueValidator(0)])
-    reorder_threshold = models.IntegerField(default=10, validators=[MinValueValidator(0)])
+    storage_quantity = models.IntegerField(default=0, validators=[MinValueValidator(0)])
+    counter_capacity = models.IntegerField(default=100, validators=[MinValueValidator(1)])
+    reorder_threshold = models.IntegerField(default=25, validators=[MinValueValidator(1)])
     expiry_date = models.DateField(blank=True, null=True)
     batches = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
@@ -79,9 +82,15 @@ class Supplier(models.Model):
 
 
 class PurchaseOrder(models.Model):
+    class Status(models.TextChoices):
+        ORDERED = "ORDERED", "Ordered"
+        DELIVERED = "DELIVERED", "Delivered"
+        STOCKING = "STOCKING", "Stocking"
+        CANCELLED = "CANCELLED", "Cancelled"
+
     order_id = models.CharField(max_length=15, primary_key=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="purchase_orders")
-    status = models.CharField(max_length=25, default="DRAFT")
+    status = models.CharField(max_length=25, choices=Status.choices, default=Status.ORDERED)
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     order_date = models.DateField(blank=True, null=True)
     expected_date = models.DateField(blank=True, null=True)

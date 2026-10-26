@@ -132,13 +132,14 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 
 | Method | Endpoint | Roles | Notes |
 |--------|----------|-------|-------|
-| GET | `/medicines/` | PHARMACIST, DOCTOR | List with computed stockLevel, hasExpired. DOCTOR: read-only for prescribing. |
+| GET | `/medicines/` | PHARMACIST, DOCTOR | Paginated camelCase records with computed stockLevel and hasExpired; `unitPrice`, `sellingPrice` and `costPrice` are integer paise. DOCTOR: read-only for prescribing. |
 | GET | `/medicines/{id}/` | PHARMACIST, DOCTOR | Detail |
 | POST | `/medicines/` | PHARMACIST | Add new medicine |
 | PATCH | `/medicines/{id}/` | PHARMACIST | Update |
 | POST | `/medicines/{id}/toggle-active/` | PHARMACIST | Activate/deactivate |
-| POST | `/medicines/{id}/restock/` | PHARMACIST | Body: `{ quantity, batchNo, expiryDate, poId?, performedBy }`. Enforces maxStock. |
+| POST | `/medicines/{id}/restock/` | PHARMACIST | Body: `{ quantity, batchNo, expiryDate, poId? }`. The authenticated staff member is recorded as performer. |
 | GET | `/medicines/stock-alerts/` | PHARMACIST | OUT_OF_STOCK, LOW_STOCK, EXPIRY, EXPIRED |
+| GET | `/stock-ledger/` | ADMIN, PHARMACIST | Paginated stock movements; reference is returned as `referenceId`. |
 
 ---
 
@@ -159,7 +160,7 @@ Staff list responses use standard pagination (`count`, `next`, `previous`, `resu
 |--------|----------|-------|-------|
 | GET | `/purchase-orders/` | ADMIN, PHARMACIST | Paginated list; filters: `?supplier={id}&status={status}`. |
 | GET | `/purchase-orders/{id}/` | ADMIN, PHARMACIST | Detail with serialized items. |
-| POST | `/purchase-orders/` | ADMIN, PHARMACIST | Create. Unit costs from supplier rates. |
+| POST | `/purchase-orders/` | ADMIN, PHARMACIST | Body includes `supplierId` and `items`; `totalAmount`, each item's `unitCost`, and `lineTotal` use integer paise. If `totalAmount` is omitted, it is calculated from item quantities and `unitCost`. |
 | POST | `/purchase-orders/{id}/receive/` | ADMIN, PHARMACIST | Body: `{ items: [{ medicineId, quantity, batchNo, expiryDate }] }`. Updates PO status + medicine stock. |
 
 ---
