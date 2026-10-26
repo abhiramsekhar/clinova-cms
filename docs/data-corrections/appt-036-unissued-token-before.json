@@ -1,0 +1,36 @@
+{
+  "database": "cms_db",
+  "reason": "Legacy cancelled prior reservation carried a token despite no bill, payment or reporting history.",
+  "appointment": {
+    "appointment_id": "appt-036",
+    "patient_id": "pat-14",
+    "doctor_id": "doc-06",
+    "department_id": "dept-06",
+    "appointment_date": "2026-10-27",
+    "time_slot": "09:00",
+    "booking_mode": "PRIOR",
+    "appointment_type": "New Visit",
+    "status": "CANCELLED",
+    "reason": "Regular screening",
+    "notes": "Cancelled by Anjali Menon: no available tmrw",
+    "token_number": 1,
+    "created_by_id": null,
+    "created_at": "2026-10-24T06:27:11.180Z",
+    "updated_at": "2026-10-26T09:05:42.147Z"
+  },
+  "audit_history": [
+    {
+      "log_id": "LOG-0056",
+      "user_id": "user-rec-01",
+      "action": "CANCEL_APPOINTMENT",
+      "entity_type": "APPOINTMENT",
+      "entity_id": "appt-036",
+      "details": {
+        "reason": "no available tmrw",
+        "refund": false
+      },
+      "ip_address": "127.0.0.1",
+      "created_at": "2026-10-26T09:05:42.196Z"
+    }
+  ]
+}

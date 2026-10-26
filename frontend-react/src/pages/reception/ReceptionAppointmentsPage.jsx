@@ -1,4 +1,5 @@
 import './appointment-actions.css';
+import { PriorBookingSlotLabel } from './PriorBookingSlotLabel';
 import { RebookedAction } from './RebookedAction';
 import { BookingPaymentFields, initialBookingPayment } from './bookingPayment';
 import React, { useState, useMemo, useEffect } from 'react';
@@ -1014,6 +1015,8 @@ export function ReceptionAppointmentsPage() {
                     <p className="text-caption" style={{ margin: '.5rem 0 0' }}>Automatically selected next available walk-in slot.</p>
                   </div>
                 ) : bookingData.mode === 'PRIOR' && displayedSlots.length ? (
+                  <>
+                    <p className="text-caption">Token previews may skip numbers already reserved.</p>
                     <div
                       style={{
                         display: 'grid',
@@ -1032,7 +1035,7 @@ export function ReceptionAppointmentsPage() {
                             key={s.time}
                             type="button"
                             disabled={isUnavailable}
-                            title={isUnavailable ? (s.state === 'booked' ? 'Reserved appointment slot' : 'This slot is no longer available') : `Token #${s.token}`}
+                            title={`${s.time}: ${isUnavailable ? (s.state === 'booked' ? 'Reserved appointment slot' : 'This slot is no longer available') : `Token #${s.token} (Preview)`}`}
                             onClick={() => setBookingData((prev) => ({ ...prev, slot: s }))}
                             className={`btn ${isSelected ? 'btn--primary' : 'btn--secondary'} btn--sm`}
                             style={{
@@ -1046,11 +1049,12 @@ export function ReceptionAppointmentsPage() {
                             }}
                           >
                             <span>{s.time}</span>
-                            <small style={{ fontSize: '0.65rem' }}>{`#${s.token}`}{isUnavailable && <span style={{ display: 'block' }}>{s.state === 'booked' ? 'Reserved' : 'Unavailable'}</span>}</small>
+                            <PriorBookingSlotLabel slot={s} />
                           </button>
                         );
                       })}
                     </div>
+                  </>
                 ) : (
                   <p className="text-caption" style={{ padding: '0.85rem', margin: 0, borderRadius: '8px', background: 'var(--surface)' }}>
                     {bookingData.mode === 'WALK_IN'
