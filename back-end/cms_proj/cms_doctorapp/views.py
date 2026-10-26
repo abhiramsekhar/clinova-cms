@@ -304,6 +304,14 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         if not isinstance(items_data, list) or any(not isinstance(item, dict) for item in items_data):
             return Response({"detail": "items must be a list of medicine instructions.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
 
+        own_doctor = _doctor_for_user(request.user) if _role_id(request.user) == "DOCTOR" else None
+        if _role_id(request.user) == "DOCTOR":
+            if own_doctor is None:
+                return Response({"detail": "This account is not linked to a doctor profile."}, status=status.HTTP_403_FORBIDDEN)
+            requested_doctor = resolve_doctor(doc_ident) if doc_ident else None
+            if requested_doctor and requested_doctor.pk != own_doctor.pk:
+                return Response({"detail": "You can only prescribe as your own doctor account."}, status=status.HTTP_403_FORBIDDEN)
+
         for item in items_data:
             duration = item.get("durationDays")
             if isinstance(duration, bool) or duration is None:
@@ -323,7 +331,6 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Patient not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         if _role_id(request.user) == "DOCTOR":
-            own_doctor = _doctor_for_user(request.user)
             if own_doctor is None:
                 return Response({"detail": "This account is not linked to a doctor profile."}, status=status.HTTP_403_FORBIDDEN)
             if not doc_ident:
@@ -336,7 +343,6 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Doctor not found.", "code": "NOT_FOUND"}, status=status.HTTP_404_NOT_FOUND)
 
         if _role_id(request.user) == "DOCTOR":
-            own_doctor = _doctor_for_user(request.user)
             if own_doctor is None or doctor.pk != own_doctor.pk:
                 return Response({"detail": "You can only prescribe as your own doctor account."}, status=status.HTTP_403_FORBIDDEN)
             if not Patient.objects.filter(pk=patient.pk).filter(

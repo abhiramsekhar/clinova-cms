@@ -374,13 +374,18 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _maximum_order_quantity(medicine):
-        end_date = datetime.date.today()
+        end_date = timezone.localdate()
         start_date = _add_months(end_date, -MAX_ORDER_MONTHS)
+        start_at = timezone.make_aware(datetime.datetime.combine(start_date, datetime.time.min))
+        end_at = timezone.make_aware(datetime.datetime.combine(
+            end_date + datetime.timedelta(days=1),
+            datetime.time.min,
+        ))
         dispensed = StockLedgerEntry.objects.filter(
             medicine=medicine,
             entry_type="DISPENSE",
-            created_at__date__gte=start_date,
-            created_at__date__lte=end_date,
+            created_at__gte=start_at,
+            created_at__lt=end_at,
         ).aggregate(total=Sum("quantity"))["total"] or 0
         if not dispensed:
             return INITIAL_ORDER_MAX_QUANTITY, False

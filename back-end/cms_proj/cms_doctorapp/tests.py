@@ -313,7 +313,7 @@ class DoctorDomainTests(APITestCase):
             assigned_doctor=self.doctor, is_active=True,
         )
         consultation = ConsultationRecord.objects.create(
-            record_id="con-prescription-test", patient=self.patient, doctor=self.doctor,
+            record_id="con-rx-test", patient=self.patient, doctor=self.doctor,
             appointment=self.appointment, visit_date=timezone.localdate(), is_completed=False,
         )
         mismatched_consultation = self.client.post(
