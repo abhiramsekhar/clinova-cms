@@ -434,7 +434,7 @@ export function DoctorConsultationPage() {
               <textarea id="consult-diagnosis" className="form-control" value={draft.diagnosis} onChange={(event) => updateDraft('diagnosis', event.target.value)} rows={2} />
               <label className="form-group__label" htmlFor="consult-notes">Clinical notes</label>
               <textarea id="consult-notes" className="form-control" value={draft.notes} onChange={(event) => updateDraft('notes', event.target.value)} rows={4} />
-              <label className="form-group__label" htmlFor="consult-vitals">Vital signs (JSON object, optional)</label>
+              <label className="form-group__label" htmlFor="consult-vitals">Vital Signs (Optional)</label>
               <textarea id="consult-vitals" className="form-control" value={draft.vitalSigns} onChange={(event) => updateDraft('vitalSigns', event.target.value)} rows={2} />
               <div className="doctor-consultation-actions">
                 <button type="submit" className="btn btn--secondary" disabled={saveMutation.isPending}>{saveMutation.isPending ? 'Saving…' : 'Save draft'}</button>

@@ -585,11 +585,40 @@
   background: var(--doctor-surface, #fff);
 }
 
+.doctor-prescription-item > .form-group__label,
+.doctor-prescription-item__grid .form-group__label {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.doctor-prescription-item .form-control {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d7e3e5;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--doctor-ink);
+  font: inherit;
+  line-height: 1.4;
+}
+
+.doctor-prescription-item textarea.form-control {
+  min-height: 72px;
+  resize: vertical;
+}
+
 .doctor-prescription-item__grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
-  margin: 0.75rem 0;
+  margin: 1rem 0;
 }
 
 .doctor-consultation-actions {
@@ -606,8 +635,11 @@
   margin: 0.75rem 0;
 }
 
-@media (max-width: 639px) {
+@media (max-width: 900px) {
   .doctor-prescription-item__grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 639px) {
   .doctor-workspace .page-header__actions { width: 100%; }
   .doctor-workspace .page-header__actions > .btn { width: 100%; justify-content: center; }
 }
