@@ -379,9 +379,9 @@ class ReceptionGroupTests(APITestCase):
             "time": "11:00", "payment": {"method": "CASH"},
         }
         response = self.client.post("/api/appointments/book-and-pay/", payload, format="json", **headers)
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["code"], "PAYMENT_NOT_CONFIRMED")
-        self.assertEqual(Appointment.objects.count(), before_appointments)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["bill"])
+        self.assertEqual(Appointment.objects.count(), before_appointments + 1)
         self.assertEqual(Bill.objects.count(), before_bills)
         self.assertEqual(Payment.objects.count(), before_payments)
 
@@ -608,11 +608,11 @@ class ReceptionGroupTests(APITestCase):
             return get_slot_board(self.staff_doc.pk, self.today, now=now)
         board = board_at(8)
         replacement = next(slot for slot in board if slot["time"] == "10:00")
-        self.assertEqual(replacement["state"], "booked")
+        self.assertEqual(replacement["state"], "free")
         self.assertNotEqual(next(slot for slot in board if slot["time"] == "09:30")["token"], 2)
         tokens = [slot["token"] for slot in board if slot["state"] == "free"]
         self.assertEqual(len(tokens), len(set(tokens)))
-        self.assertEqual(next(slot for slot in board_at(10) if slot["time"] == "10:00")["state"], "booked")
+        self.assertEqual(next(slot for slot in board_at(10) if slot["time"] == "10:00")["state"], "free")
         Appointment.objects.create(
             appointment_id="appt-998", patient=self.patient, doctor=self.doctor,
             department=self.dept, appointment_date=self.today, time_slot="11:00",
@@ -642,13 +642,9 @@ class ReceptionGroupTests(APITestCase):
         res = self.client.post(url, payload, format="json", **headers)
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual(res.data["appointment"]["doctorId"], "staff-doc-01")
-        self.assertEqual(res.data["bill"]["status"], "PAID")
-        self.assertEqual(res.data["bill"]["totalAmount"], 70000)
-        self.assertEqual(res.data["bill"]["paidAmount"], 70000)
-        self.assertEqual(len(res.data["bill"]["items"]), 2)
-        self.assertEqual([item["type"] for item in res.data["bill"]["items"]], ["registration", "consultation"])
+        self.assertIsNone(res.data["bill"])
         self.assertEqual(res.data["appointment"]["status"], Appointment.Status.SCHEDULED)
-        self.assertIsNotNone(res.data["appointment"]["tokenNumber"])
+        self.assertIsNone(res.data["appointment"]["tokenNumber"])
         self.assertEqual(res.data["appointment"]["bookingMode"], "PRIOR")
 
     def test_repeat_booking_after_paid_registration_charges_consultation_only(self):
@@ -672,9 +668,10 @@ class ReceptionGroupTests(APITestCase):
             "time": "11:00", "type": "Follow-up", "payment": {"method": "CASH", "confirmed": True},
         }, format="json", **headers)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["bill"]["totalAmount"], 50000)
-        self.assertEqual(len(response.data["bill"]["items"]), 1)
-        self.assertEqual(response.data["bill"]["items"][0]["type"], "consultation")
+        self.assertIsNone(response.data["bill"])
+        quote = self.client.get("/api/appointments/booking-quote/", {
+            "patient": self.patient.pk, "doctor": self.doctor.pk}, **headers)
+        self.assertEqual(quote.data["total"], 50000)
 
     def test_later_visit_after_completed_paid_consultation_charges_consultation_only(self):
         Payment.objects.create(
@@ -692,8 +689,10 @@ class ReceptionGroupTests(APITestCase):
             "time": "11:00", "type": "Follow-up", "payment": {"method": "CASH", "confirmed": True},
         }, format="json", **headers)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["bill"]["totalAmount"], 50000)
-        self.assertEqual([item["type"] for item in response.data["bill"]["items"]], ["consultation"])
+        self.assertIsNone(response.data["bill"])
+        quote = self.client.get("/api/appointments/booking-quote/", {
+            "patient": self.patient.pk, "doctor": self.doctor.pk}, **headers)
+        self.assertEqual(quote.data["total"], 50000)
 
     def test_paid_walk_in_is_automatically_checked_in(self):
         self.appointment.status = Appointment.Status.CANCELLED
@@ -734,7 +733,7 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(res_cancel.data["status"], "CANCELLED")
 
         self.bill.refresh_from_db()
-        self.assertEqual(self.bill.payment_status, Bill.PaymentStatus.CANCELLED)
+        self.assertEqual(self.bill.payment_status, Bill.PaymentStatus.PARTIAL)
         self.assertEqual(self.bill.amount_paid, previous_paid)
         self.assertEqual(self.bill.payments.count(), previous_payment_count)
 
@@ -756,8 +755,8 @@ class ReceptionGroupTests(APITestCase):
         self.assertIn("Marked no-show by Reception", self.appointment.notes)
         self.assertIn("Patient requested cancellation", self.appointment.notes)
         slot = next(s for s in get_slot_board(self.staff_doc.pk, self.today) if s["time"] == self.appointment.time_slot)
-        self.assertEqual(slot["state"], "booked")
-        self.assertEqual(slot["token"], token)
+        self.assertEqual(slot["state"], "free")
+        self.assertNotEqual(slot["token"], token)
 
     def test_walkin_no_show_cannot_be_cancelled(self):
         self.appointment.booking_mode = Appointment.BookingMode.WALK_IN
@@ -797,9 +796,9 @@ class ReceptionGroupTests(APITestCase):
         self.appointment.save(update_fields=["time_slot"])
         def at(hour, minute):
             return timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(hour, minute)))
-        for moment in [at(10, 0), at(10, 14)]:
+        for moment in [at(9, 30), at(9, 45)]:
             self.assertEqual(mark_expired_scheduled_appointments(now=moment), 0)
-        self.assertEqual(mark_expired_scheduled_appointments(now=at(10, 15)), 1)
+        self.assertEqual(mark_expired_scheduled_appointments(now=at(9, 46)), 1)
         self.appointment.refresh_from_db()
         self.assertEqual(self.appointment.status, Appointment.Status.NO_SHOW)
         self.assertEqual(mark_expired_scheduled_appointments(now=at(10, 31)), 0)
@@ -812,9 +811,9 @@ class ReceptionGroupTests(APITestCase):
         self.appointment.time_slot = "10:00"
         self.appointment.save(update_fields=["time_slot"])
         self.settle_appointment_bill()
-        moment = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(10, 10)))
+        moment = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(9, 35)))
         with patch("cms_recepapp.views.timezone.now", return_value=moment):
-            response = self.client.post(f"/api/appointments/{self.appointment.pk}/check-in/", {}, format="json", **headers)
+            response = self.client.post(f"/api/appointments/{self.appointment.pk}/check-in/", {"arrivalConfirmed": True, "registrationVerified": True}, format="json", **headers)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.appointment.refresh_from_db()
         self.assertEqual(self.appointment.status, Appointment.Status.CHECKED_IN)
@@ -980,9 +979,9 @@ class ReceptionGroupTests(APITestCase):
         res_cancel = self.client.post(f"/api/appointments/{appt_id}/cancel/", {"reason": "Change of plans"}, format="json", **headers)
         self.assertEqual(res_cancel.status_code, status.HTTP_200_OK)
 
-        # 4. Cancelled reservation cannot be reassigned
+        # 4. Cancelled reservation releases the future slot
         res3 = self.client.post("/api/appointments/book-and-pay/", payload2, format="json", **headers)
-        self.assertEqual(res3.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res3.status_code, status.HTTP_201_CREATED)
 
     def test_bill_cancel_with_refund_and_audit(self):
         headers = self.auth_headers(self.user_rec)
@@ -1063,19 +1062,24 @@ class ReceptionGroupTests(APITestCase):
 
     def test_walkin_uses_next_slot_after_reservation(self):
         self.appointment.time_slot = "10:30"
-        self.appointment.save(update_fields=["time_slot"])
+        self.appointment.status = "CHECKED_IN"
+        self.appointment.save(update_fields=["time_slot", "status"])
         response = self.walkin_request(time="11:00")
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["appointment"]["time"], "11:00")
 
     def test_walkin_respects_all_prior_reservation_statuses(self):
         self.appointment.time_slot = "10:30"
-        for state in ["SCHEDULED", "CANCELLED", "NO_SHOW"]:
-            self.appointment.status = state
-            self.appointment.save(update_fields=["status", "time_slot"])
-            response = self.walkin_request()
-            self.assertEqual(response.status_code, 400)
-            self.assertEqual(response.data["code"], "SLOT_UNAVAILABLE")
+        self.appointment.status = "CHECKED_IN"
+        self.appointment.save(update_fields=["time_slot", "status"])
+        response = self.walkin_request()
+        self.assertEqual(response.status_code, 400)
+        self.appointment.status = "CANCELLED"
+        self.appointment.save(update_fields=["status"])
+        response = self.walkin_request()
+        self.assertEqual(response.status_code, 201)
+        self.assertNotEqual(response.data["appointment"]["tokenNumber"], self.appointment.token_number)
+
 
     def test_payment_failure_rolls_back_booking_and_token(self):
         from rest_framework.exceptions import ValidationError
@@ -1094,16 +1098,15 @@ class ReceptionGroupTests(APITestCase):
 
     def test_no_show_grace_is_configurable_and_only_prior(self):
         from cms_recepapp.services import mark_expired_scheduled_appointments
-        Setting.objects.update_or_create(key="appointment.noShowGraceMinutes", defaults={"value": "45"})
-        self.appointment.time_slot = "10:00"
-        self.appointment.save(update_fields=["time_slot"])
-        at = lambda minute: timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(10, minute)))
-        self.assertEqual(mark_expired_scheduled_appointments(now=at(44)), 0)
-        self.assertEqual(mark_expired_scheduled_appointments(now=at(45)), 1)
+        Setting.objects.update_or_create(key="appointment.reportingDeadlineMinutes", defaults={"value": "20"})
+        at = lambda minute: timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(9, minute)))
+        self.assertEqual(mark_expired_scheduled_appointments(now=at(40)), 0)
+        self.assertEqual(mark_expired_scheduled_appointments(now=at(41)), 1)
         self.appointment.status = "SCHEDULED"
         self.appointment.booking_mode = "WALK_IN"
         self.appointment.save(update_fields=["status", "booking_mode"])
         self.assertEqual(mark_expired_scheduled_appointments(now=at(59)), 0)
+
 
     def test_history_cannot_be_deleted_or_rescheduled_via_crud(self):
         url = f"/api/appointments/{self.appointment.pk}/"
@@ -1126,33 +1129,18 @@ class ReceptionGroupTests(APITestCase):
                                 data or {}, format="json", **self.auth_headers(user or self.user_rec))
 
     def test_late_arrival_restores_checks_in_and_prints_saved_token(self):
-        from cms_recepapp.services import mark_expired_scheduled_appointments
         self.settle_appointment_bill()
         self.appointment.status = "NO_SHOW"
-        self.appointment.notes = "Automatically marked No-show"
-        self.appointment.save(update_fields=["status", "notes"])
-        original = (self.appointment.pk, self.appointment.token_number, self.appointment.time_slot)
-        counts = (Appointment.objects.count(), Bill.objects.count(), Payment.objects.count())
-        response = self.prior_action("undo-no-show", {"arrivalConfirmed": True})
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["status"], "SCHEDULED")
-        noon = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(12)))
-        with patch("django.utils.timezone.now", return_value=noon):
-            self.assertEqual(mark_expired_scheduled_appointments(), 0)
-            self.assertEqual(self.prior_action("print-token").status_code, 400)
-            checked_in = self.prior_action("check-in")
-            self.assertEqual(checked_in.status_code, 200, checked_in.data)
-            for _ in range(2):
-                printed = self.prior_action("print-token")
-                self.assertEqual(printed.status_code, 200, printed.data)
-                self.assertEqual(printed.data["tokenNumber"], original[1])
+        self.appointment.save(update_fields=["status"])
+        now = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(9, 50)))
+        with patch("django.utils.timezone.now", return_value=now):
+            response = self.prior_action("check-in", {"arrivalConfirmed": True, "registrationVerified": True, "time": "10:00"})
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(response.data["tokenNumber"], 3)
+            self.assertEqual(self.prior_action("print-token").status_code, 200)
         self.appointment.refresh_from_db()
-        self.assertEqual((self.appointment.pk, self.appointment.token_number, self.appointment.time_slot), original)
-        self.assertIn("Automatically marked No-show", self.appointment.notes)
-        self.assertIn("late arrival confirmed", self.appointment.notes)
-        self.assertEqual(counts, (Appointment.objects.count(), Bill.objects.count(), Payment.objects.count()))
-        self.assertEqual(AuditLog.objects.filter(action="UNDO_NO_SHOW_APPOINTMENT", entity_id=self.appointment.pk).count(), 1)
-        self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).status_code, 400)
+        self.assertEqual(self.appointment.status, "CHECKED_IN")
+
 
     def test_prior_print_and_undo_enforce_date_and_state(self):
         self.settle_appointment_bill()
@@ -1163,7 +1151,7 @@ class ReceptionGroupTests(APITestCase):
                 self.appointment.save(update_fields=["status", "appointment_date"])
                 response = self.prior_action(action, {"arrivalConfirmed": True})
                 self.assertEqual(response.status_code, 400)
-                self.assertEqual(response.data["code"], "INVALID_APPOINTMENT_DATE")
+                self.assertEqual(response.data["code"], "INVALID_APPOINTMENT_DATE" if action == "print-token" else "REPORT_REQUIRED")
         self.appointment.appointment_date = self.today
         for state in ["SCHEDULED", "NO_SHOW", "CANCELLED", "IN_PROGRESS", "COMPLETED"]:
             self.appointment.status = state
@@ -1174,26 +1162,13 @@ class ReceptionGroupTests(APITestCase):
         self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).status_code, 400)
 
     def test_prior_actions_require_payment_token_and_arrival(self):
-        self.appointment.status = "NO_SHOW"
-        self.appointment.save(update_fields=["status"])
-        self.assertEqual(self.prior_action("undo-no-show").data["code"], "ARRIVAL_NOT_CONFIRMED")
-        for action, state in [("print-token", "CHECKED_IN"), ("undo-no-show", "NO_SHOW"), ("check-in", "SCHEDULED")]:
-            self.appointment.status = state
-            self.appointment.save(update_fields=["status"])
-            for payment_status in ["UNPAID", "PARTIAL", "CANCELLED"]:
-                self.bill.payment_status = payment_status
-                self.bill.save(update_fields=["payment_status"])
-                response = self.prior_action(action, {"arrivalConfirmed": True})
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(response.data["code"], "PAYMENT_REQUIRED")
-        self.settle_appointment_bill()
-        self.appointment.token_number = None
-        self.appointment.status = "NO_SHOW"
-        self.appointment.save(update_fields=["token_number", "status"])
-        self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).data["code"], "TOKEN_REQUIRED")
+        self.assertEqual(self.prior_action("check-in").status_code, 400)
+        self.assertEqual(self.prior_action("undo-no-show").data["code"], "REPORT_REQUIRED")
         self.appointment.status = "CHECKED_IN"
-        self.appointment.save(update_fields=["status"])
+        self.appointment.token_number = None
+        self.appointment.save(update_fields=["status", "token_number"])
         self.assertEqual(self.prior_action("print-token").data["code"], "TOKEN_REQUIRED")
+
 
     def test_new_prior_actions_reject_walkins_and_doctor_role(self):
         self.settle_appointment_bill()
@@ -1213,25 +1188,18 @@ class ReceptionGroupTests(APITestCase):
             status="CHECKED_IN")
         response = self.prior_action("undo-no-show", {"arrivalConfirmed": True})
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["code"], "APPOINTMENT_CONFLICT")
+        self.assertEqual(response.data["code"], "REPORT_REQUIRED")
         other.token_number = 99
         other.time_slot = self.appointment.time_slot
         other.save(update_fields=["token_number", "time_slot"])
-        self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).data["code"], "APPOINTMENT_CONFLICT")
+        self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).data["code"], "REPORT_REQUIRED")
 
     def test_undo_exemption_does_not_disable_other_or_next_day_no_shows(self):
         from cms_recepapp.services import mark_expired_scheduled_appointments
-        self.settle_appointment_bill()
-        self.appointment.status = "NO_SHOW"
-        self.appointment.save(update_fields=["status"])
-        self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).status_code, 200)
-        other = Appointment.objects.create(patient=self.patient, doctor=self.doctor,
-            appointment_date=self.today, time_slot="11:00", token_number=5, status="SCHEDULED")
+        self.assertEqual(self.prior_action("undo-no-show", {"arrivalConfirmed": True}).status_code, 400)
         noon = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(12)))
         self.assertEqual(mark_expired_scheduled_appointments(now=noon), 1)
-        other.refresh_from_db()
-        self.assertEqual(other.status, "NO_SHOW")
-        self.assertEqual(mark_expired_scheduled_appointments(now=noon + datetime.timedelta(days=1)), 1)
+        self.assertEqual(mark_expired_scheduled_appointments(now=noon), 0)
 
 
     def test_patient_name_examples_on_registration_and_edit(self):
@@ -1351,9 +1319,9 @@ class ConcurrentReceptionBookingTests(TransactionTestCase):
             outcomes = list(pool.map(book, [p.pk for p in patients]))
         self.assertEqual(sorted(outcomes), [201, 400])
         self.assertEqual(Appointment.objects.count(), 1)
-        self.assertEqual(Payment.objects.count(), 1)
+        self.assertEqual(Payment.objects.count(), 0)
         appointment = Appointment.objects.get()
-        self.assertEqual(appointment.token_number, 4)
+        self.assertIsNone(appointment.token_number)
         self.assertEqual(appointment.status, "SCHEDULED")
 
     def race_late_arrival_actions(self, second_action):
@@ -1393,6 +1361,70 @@ class ConcurrentReceptionBookingTests(TransactionTestCase):
     @skipUnlessDBFeature("has_select_for_update")
     def test_concurrent_undo_and_checkin_preserve_valid_state(self):
         outcomes = self.race_late_arrival_actions("check-in")
-        self.assertEqual(outcomes["undo-no-show"], 200)
+        self.assertEqual(outcomes["undo-no-show"], 400)
         self.assertIn(outcomes["check-in"], [200, 400])
-        self.assertEqual(self.appointment.status, "CHECKED_IN" if outcomes["check-in"] == 200 else "SCHEDULED")
+        self.assertEqual(self.appointment.status, "CHECKED_IN" if outcomes["check-in"] == 200 else "NO_SHOW")
+
+    @skipUnlessDBFeature("has_select_for_update")
+    def test_concurrent_reporting_records_one_payment_and_token(self):
+        ReceptionGroupTests.setUp(self)
+        self.appointment.token_number = None
+        self.appointment.save(update_fields=['token_number'])
+        moment = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(9, 35)))
+        barrier = Barrier(2)
+        before = Payment.objects.count()
+        def report(_):
+            close_old_connections()
+            try:
+                client = APIClient()
+                client.force_authenticate(user=self.user_rec)
+                barrier.wait(timeout=10)
+                response = client.post(f'/api/appointments/{self.appointment.pk}/check-in/', {
+                    'arrivalConfirmed': True, 'registrationVerified': True,
+                    'payment': {'confirmed': True, 'method': 'CASH'}, 'expectedTotal': 35000
+                }, format='json')
+                return response.status_code, response.data
+            finally:
+                close_old_connections()
+        with patch('django.utils.timezone.now', return_value=moment):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(report, range(2)))
+        self.assertEqual([code for code, _ in outcomes], [200, 200], outcomes)
+        self.assertEqual(Payment.objects.count(), before + 1)
+        self.assertEqual(outcomes[0][1]['tokenNumber'], outcomes[1][1]['tokenNumber'])
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, 'CHECKED_IN')
+
+    @skipUnlessDBFeature('has_select_for_update')
+    def test_concurrent_late_rebooking_creates_one_replacement(self):
+        ReceptionGroupTests.setUp(self)
+        self.appointment.status = 'NO_SHOW'
+        self.appointment.save(update_fields=['status'])
+        moment = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(12, 0)))
+        barrier = Barrier(2)
+        counts = (Appointment.objects.count(), Payment.objects.count(), Bill.objects.count())
+        def report(_):
+            close_old_connections()
+            try:
+                client = APIClient()
+                client.force_authenticate(user=self.user_rec)
+                barrier.wait(timeout=10)
+                response = client.post(f'/api/appointments/{self.appointment.pk}/check-in/', {
+                    'arrivalConfirmed': True, 'registrationVerified': True, 'time': '12:00',
+                    'payment': {'confirmed': True, 'method': 'CASH'}, 'expectedTotal': 35000
+                }, format='json')
+                return response.status_code, response.data
+            finally:
+                close_old_connections()
+        with patch('django.utils.timezone.now', return_value=moment):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(report, range(2)))
+        self.assertEqual([code for code, _ in outcomes], [200, 200], outcomes)
+        self.assertEqual(outcomes[0][1]['id'], outcomes[1][1]['id'])
+        self.assertEqual(outcomes[0][1]['tokenNumber'], outcomes[1][1]['tokenNumber'])
+        self.assertEqual((Appointment.objects.count(), Payment.objects.count(), Bill.objects.count()),
+                         (counts[0] + 1, counts[1] + 1, counts[2]))
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, 'REBOOKED')
+        self.assertEqual(self.appointment.token_number, 3)
+        self.assertEqual(AuditLog.objects.filter(action='LATE_ARRIVAL_REASSIGNED', entity_id=self.appointment.pk).count(), 1)

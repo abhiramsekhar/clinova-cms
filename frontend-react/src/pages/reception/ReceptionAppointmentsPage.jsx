@@ -1,4 +1,6 @@
 import './appointment-actions.css';
+import { RebookedAction } from './RebookedAction';
+import { BookingPaymentFields, initialBookingPayment } from './bookingPayment';
 import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -22,13 +24,19 @@ function slotHasNotStarted(slot, minute) {
   return hour * 60 + minutes >= minute;
 }
 
+function reportingTimes(value) {
+  if (!value?.reportingStartsAt || !value?.reportingDeadlineAt) return 'Choose a slot to view reporting times';
+  const time = (iso) => new Intl.DateTimeFormat('en-IN', { timeZone: CLINIC_TIME_ZONE, hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+  return `${time(value.reportingStartsAt)} – ${time(value.reportingDeadlineAt)}`;
+}
+
 function addDaysToDateString(dateString, days) {
   const [year, month, day] = dateString.split('-').map(Number);
   const date = new Date(year, month - 1, day + days);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-const NON_CANCELLED_APPOINTMENT_STATUSES = 'SCHEDULED,CHECKED_IN,IN_PROGRESS,COMPLETED,NO_SHOW';
+const NON_CANCELLED_APPOINTMENT_STATUSES = 'SCHEDULED,CHECKED_IN,IN_PROGRESS,COMPLETED,NO_SHOW,REBOOKED';
 
 function printAppointmentToken(appointment, onPrintClosed, preparedWindow = null) {
   if (!appointment?.tokenNumber && !appointment?.token_number) return false;
@@ -181,10 +189,11 @@ export function ReceptionAppointmentsPage() {
   const slotDate = bookingData.mode === 'WALK_IN' ? todayStr : bookingData.date;
 
   const { data: bookingQuote, isLoading: quoteLoading, error: quoteError, refetch: refetchQuote } = useQuery({
-    queryKey: ['appointmentBookingQuote', bookingData.patient?.id || bookingData.patient?.patient_id, bookingData.doctor?.id || bookingData.doctor?.staff_id],
+    queryKey: ['appointmentBookingQuote', bookingData.patient?.id || bookingData.patient?.patient_id, bookingData.doctor?.id || bookingData.doctor?.staff_id, slotDate, bookingData.slot?.time],
     queryFn: () => appointmentsApi.bookingQuote({
       patient: bookingData.patient.id || bookingData.patient.patient_id,
       doctor: bookingData.doctor.id || bookingData.doctor.staff_id,
+      date: slotDate, time: bookingData.slot?.time,
     }),
     enabled: Boolean(bookingData.patient && bookingData.doctor),
   });
@@ -268,33 +277,56 @@ export function ReceptionAppointmentsPage() {
   }, [preselectedPatientId, patientsList]);
 
   // Actions Mutations
-  const checkInMutation = useMutation({
-    mutationFn: async (id) => await appointmentsApi.checkIn(id),
-    onSuccess: () => {
-      toast.success('Patient checked in successfully.');
-      queryClient.invalidateQueries({ queryKey: ['appointmentsList'] });
-      queryClient.invalidateQueries({ queryKey: ['appointmentTabCounts'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionAppointmentsToday'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionDashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['receptionScheduledAppointments'] });
-    },
-    onError: (err) => {
-      const msg = err?.response?.data?.detail || 'Failed to check in patient.';
-      toast.error(msg);
-    },
+  const [viewBookingId, setViewBookingId] = useState(null);
+  const replacementQuery = useQuery({
+    queryKey: ['replacementAppointment', viewBookingId],
+    queryFn: () => appointmentsApi.get(viewBookingId), enabled: Boolean(viewBookingId), staleTime: 0,
   });
-
-  const [undoNoShowAppt, setUndoNoShowAppt] = useState(null);
-  const undoNoShowMutation = useMutation({
-    mutationFn: (id) => appointmentsApi.undoNoShow(id),
-    onSuccess: () => {
-      setUndoNoShowAppt(null);
-      toast.success('No-show undone. Verify the appointment and check in the patient.');
-      for (const key of ['appointmentsList', 'appointmentTabCounts', 'receptionAppointmentsToday', 'receptionDashboard', 'receptionScheduledAppointments']) {
+  const [reportingAppt, setReportingAppt] = useState(null);
+  const [reportingForm, setReportingForm] = useState({ arrivalConfirmed: false, registrationVerified: false, method: 'CASH', time: '' });
+  const [reportingError, setReportingError] = useState('');
+  const [reviewedTotal, setReviewedTotal] = useState(null);
+  const openReporting = (appointment) => {
+    setReportingAppt(appointment);
+    setReportingForm({ arrivalConfirmed: false, registrationVerified: false, method: 'CASH', time: '' });
+    setReportingError(''); setReviewedTotal(null);
+  };
+  const reportingQuote = useQuery({
+    queryKey: ['reportingQuote', reportingAppt?.id],
+    queryFn: () => appointmentsApi.bookingQuote({ patient: reportingAppt.patientId, doctor: reportingAppt.doctorId, appointmentId: reportingAppt.id }),
+    enabled: Boolean(reportingAppt), staleTime: 0,
+  });
+  const checkInMutation = useMutation({
+    mutationFn: () => appointmentsApi.checkIn(reportingAppt.id, {
+      arrivalConfirmed: reportingForm.arrivalConfirmed,
+      registrationVerified: reportingForm.registrationVerified,
+      time: reportingForm.time || undefined,
+      expectedTotal: reviewedTotal ?? reportingQuote.data?.total,
+      payment: { confirmed: true, method: reportingForm.method },
+    }),
+    onSuccess: (replacement) => {
+      if (replacement.id !== reportingAppt.id) {
+        queryClient.setQueriesData({ queryKey: ['appointmentsList'] }, previous => {
+          const update = row => row.id === reportingAppt.id ? { ...row, status: 'REBOOKED', lateArrivalHandled: true, replacementAppointmentId: replacement.id } : row;
+          return Array.isArray(previous) ? previous.map(update) : previous?.results ? { ...previous, results: previous.results.map(update) } : previous;
+        });
+      }
+      setReportingAppt(null);
+      toast.success('Payment verified, patient checked in and token confirmed.');
+      for (const key of ['appointmentsList', 'appointmentTabCounts', 'receptionAppointmentsToday', 'receptionDashboard', 'receptionScheduledAppointments', 'slotBoard', 'billsList', 'receptionRecentBills', 'appointmentBookingQuote']) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
     },
-    onError: (err) => toast.error(err?.response?.data?.detail || 'Unable to undo No-show.'),
+    onError: (err) => {
+      const data = err?.response?.data;
+      if (data?.code === 'SLOT_REVIEW_REQUIRED') {
+        setReportingForm(previous => ({ ...previous, time: data.time }));
+        setReportingError(`The available slot is ${formatTime(data.time)}. Review this time before confirming again.`);
+      } else if (data?.code === 'QUOTE_CHANGED') {
+        setReviewedTotal(Number(data.total));
+        setReportingError('The outstanding fees changed. Review the updated total before confirming again.');
+      } else setReportingError(data?.detail || (Array.isArray(data) ? data.join(' ') : 'Unable to complete reporting.'));
+    },
   });
   const [printingToken, setPrintingToken] = useState(false);
   const printPriorToken = async (appointment) => {
@@ -383,11 +415,7 @@ export function ReceptionAppointmentsPage() {
         date: appointmentDate,
         time: bookingData.slot?.time,
         type: bookingData.type,
-        expectedTotal: bookingQuote.total,
-        payment: {
-          method: bookingData.paymentMethod,
-          confirmed: true,
-        },
+        ...initialBookingPayment(bookingData.mode, bookingQuote, bookingData.paymentMethod),
       };
       return await appointmentsApi.bookAndPay(payload);
     },
@@ -404,7 +432,7 @@ export function ReceptionAppointmentsPage() {
       queryClient.invalidateQueries({ queryKey: ['billsList'] });
       queryClient.invalidateQueries({ queryKey: ['receptionRecentBills'] });
       queryClient.invalidateQueries({ queryKey: ['appointmentBookingQuote'] });
-      toast.success('Payment recorded and appointment booked!');
+      toast.success(bookingData.mode === 'PRIOR' ? 'Prior Booking confirmed successfully. Payment is payable at reporting.' : 'Payment recorded and appointment booked!');
     },
     onError: (err) => {
       if (err?.response?.data?.code === 'SLOT_UNAVAILABLE') {
@@ -490,23 +518,23 @@ export function ReceptionAppointmentsPage() {
       label: 'Actions',
       width: '290px',
       render: (r) => {
-        if (r.bookingMode === 'WALK_IN' || !['SCHEDULED', 'NO_SHOW', 'CHECKED_IN'].includes(r.status)) return null;
+        if (r.bookingMode === 'WALK_IN') return null;
+        if (r.status === 'REBOOKED' || r.lateArrivalHandled) return <RebookedAction appointment={r} onView={setViewBookingId} />;
+        if (!['SCHEDULED', 'NO_SHOW', 'CHECKED_IN'].includes(r.status)) return null;
         const isScheduled = r.status === 'SCHEDULED';
-        const checkInAllowed = isScheduled && r.date === todayStr && r.billStatus === 'PAID';
-        const busy = checkInMutation.isPending || noShowMutation.isPending || cancelMutation.isPending || undoNoShowMutation.isPending || printingToken;
+        const checkInAllowed = r.date === todayStr;
+        const busy = checkInMutation.isPending || noShowMutation.isPending || cancelMutation.isPending || printingToken;
         return (
           <div className="appointment-actions">
-            {mainSection === 'today' && isScheduled && <button type="button" className="appointment-action appointment-action--checkin"
-              disabled={!checkInAllowed || busy}
-              title={!checkInAllowed ? (r.date !== todayStr ? 'Check-in is available on the appointment date.' : 'Complete payment before check-in.') : 'Check in patient'}
-              onClick={() => checkInMutation.mutate(r.id || r.appointment_id)}>
-              <Icon name="icon-check" size={16} />
-              {checkInMutation.isPending && checkInMutation.variables === (r.id || r.appointment_id) ? 'Checking in…' : 'Check In'}
+            {isScheduled && <button type="button" className="appointment-action appointment-action--checkin"
+              disabled={!checkInAllowed || busy} title="Report arrival, review fees and check in on the appointment date"
+              onClick={() => openReporting(r)}>
+              <Icon name="icon-check" size={16} /> Report & Pay
             </button>}
             {mainSection === 'today' && isScheduled && <button type="button" className="appointment-action appointment-action--noshow"
               disabled={busy || r.date > todayStr} onClick={() => setNoShowAppt(r)}>No-show</button>}
-            {r.status === 'NO_SHOW' && r.date === todayStr && <button type="button" className="appointment-action" disabled={busy || r.billStatus !== 'PAID' || !r.tokenNumber}
-              onClick={() => setUndoNoShowAppt(r)}>Undo No-show</button>}
+            {r.status === 'NO_SHOW' && r.date === todayStr && <button type="button" className="appointment-action" disabled={busy}
+              onClick={() => openReporting(r)}>Report Late Arrival</button>}
             {r.status === 'CHECKED_IN' && r.date === todayStr && <button type="button" className="appointment-action" disabled={busy || r.billStatus !== 'PAID' || !r.tokenNumber}
               onClick={() => printPriorToken(r)}><Icon name="icon-printer" size={16} /> Print Token</button>}
             {['SCHEDULED', 'NO_SHOW'].includes(r.status) && <button type="button" className="appointment-action appointment-action--cancel" disabled={busy}
@@ -653,6 +681,7 @@ export function ReceptionAppointmentsPage() {
               <option value="COMPLETED">Completed</option>
               <option value="CANCELLED">Cancelled</option>
               <option value="NO_SHOW">No-show</option>
+              <option value="REBOOKED">Arrived Late (Rebooked)</option>
             </select>
           </div>
 
@@ -718,8 +747,8 @@ export function ReceptionAppointmentsPage() {
             : wizardStep === 3
             ? 'Book Appointment — Step 3: Choose Mode & Slot'
             : wizardStep === 4
-            ? 'Book Appointment — Step 4: Consultation Fee & Payment'
-            : 'Appointment Confirmed & Token Issued'
+            ? (bookingData.mode === 'PRIOR' ? 'Book Appointment — Step 4: Confirm Prior Booking' : 'Book Appointment — Step 4: Consultation Fee & Payment')
+            : (bookedResult?.bookingMode === 'PRIOR' ? 'Prior Booking Confirmed' : 'Appointment Confirmed & Token Issued')
         }
         size={wizardStep === 3 ? 'lg' : wizardStep === 5 ? 'sm' : 'md'}
       >
@@ -1044,7 +1073,7 @@ export function ReceptionAppointmentsPage() {
                 }
                 onClick={() => setWizardStep(4)}
               >
-                <span>Proceed to Payment</span>
+                <span>{bookingData.mode === 'PRIOR' ? 'Review Prior Booking' : 'Proceed to Payment'}</span>
                 <Icon name="icon-arrow-right" size={16} />
               </button>
             </div>
@@ -1090,7 +1119,7 @@ export function ReceptionAppointmentsPage() {
                 <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.65rem', marginTop: '0.5rem' }}>
                   {bookingQuote.registrationFeeDue && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}><span>One-time Registration Fee</span><strong>{Format.money(bookingQuote.registrationFee)}</strong></div>}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}><span>Consultation Fee</span><strong>{Format.money(bookingQuote.consultationFee)}</strong></div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}><strong>Total Payable</strong><strong style={{ fontSize: '1.25rem', color: 'var(--primary)' }}>{Format.money(bookingQuote.total)}</strong></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '0.5rem', marginTop: '0.5rem' }}><strong>{bookingData.mode === 'PRIOR' ? 'Payable at Reporting' : 'Total Payable'}</strong><strong style={{ fontSize: '1.25rem', color: 'var(--primary)' }}>{Format.money(bookingQuote.total)}</strong></div>
                 </div>
               ) : null}
             </div>
@@ -1101,22 +1130,12 @@ export function ReceptionAppointmentsPage() {
                 I confirm the patient is physically present. Successful payment will check them in.
               </label>
             )}
-            <FormField label="Payment Method" required>
-              <select
-                className="form-input"
-                value={bookingData.paymentMethod}
-                onChange={(e) => setBookingData((prev) => ({ ...prev, paymentMethod: e.target.value }))}
-              >
-                <option value="CASH">Cash</option>
-                <option value="CARD">Credit / Debit Card</option>
-                <option value="UPI">UPI (Google Pay, PhonePe, Paytm)</option>
-              </select>
-            </FormField>
-
-            <p style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
-                Confirm collection for the full bill. The appointment token is issued after the payment is saved.
-            </p>
-
+            <BookingPaymentFields mode={bookingData.mode} paymentMethod={bookingData.paymentMethod}
+              onChange={e => setBookingData(previous => ({ ...previous, paymentMethod: e.target.value }))} />
+            {bookingData.mode === 'PRIOR' && <div role="status">
+              <p>Reporting Window: <strong>{reportingTimes(bookingQuote)}</strong></p>
+              <p>Booking Status: Scheduled. Registration (if unpaid) and consultation fees are payable at reporting.</p>
+            </div>}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1.5rem' }}>
               <button
                 type="button"
@@ -1137,7 +1156,7 @@ export function ReceptionAppointmentsPage() {
                     <span className="spinner spinner-sm" /> Booking...
                   </span>
                 ) : (
-                  <span>{bookingData.mode === 'WALK_IN' ? 'Confirm Payment & Check In' : 'Confirm Payment & Book'}</span>
+                  <span>{bookingData.mode === 'WALK_IN' ? 'Confirm Payment & Check In' : 'Confirm Prior Booking'}</span>
                 )}
               </button>
             </div>
@@ -1176,12 +1195,14 @@ export function ReceptionAppointmentsPage() {
                 margin: '1rem 0 1.5rem 0',
               }}
             >
+              {bookedResult.bookingMode === 'WALK_IN' && <>
               <div style={{ fontSize: '0.8rem', color: 'var(--muted)', textTransform: 'uppercase' }}>
                 Issued Token Number
               </div>
               <div style={{ fontSize: '3.5rem', fontWeight: 800, color: 'var(--primary)', lineHeight: 1.1 }}>
                 #{bookedResult.tokenNumber || bookedResult.token_number}
               </div>
+              </>}
               <div style={{ marginTop: '0.75rem', fontSize: '0.9rem', color: 'var(--text)' }}>
                 Patient: <strong>{bookedResult.patientName || bookingData.patient?.name}</strong>
               </div>
@@ -1198,7 +1219,7 @@ export function ReceptionAppointmentsPage() {
 
             {bookedResult.bookingMode === 'PRIOR' ? (
               <>
-                <p className="text-caption">Your token is saved. Printing is available on the appointment date after manual check-in.</p>
+                <p className="text-caption">Prior Booking confirmed successfully. Please report between {reportingTimes(bookedResult)} on {formatDate(bookedResult.date)}. Applicable registration and consultation payment will be collected during reporting. Your status is Scheduled; no token has been issued.</p>
                 <button type="button" className="btn btn--primary" style={{ width: '100%' }} onClick={() => {
                   resetWizard();
                   navigate('/reception/appointments', { replace: true });
@@ -1225,15 +1246,39 @@ export function ReceptionAppointmentsPage() {
         )}
       </Modal>
 
-      <ConfirmDialog
-        isOpen={!!undoNoShowAppt}
-        onClose={() => setUndoNoShowAppt(null)}
-        title="Undo No-show"
-        message="Confirm the patient is physically present. This restores the existing appointment for manual check-in, using the saved payment and token."
-        confirmLabel="Confirm Arrival & Undo"
-        isLoading={undoNoShowMutation.isPending}
-        onConfirm={() => undoNoShowMutation.mutate(undoNoShowAppt?.id || undoNoShowAppt?.appointment_id)}
-      />
+      <Modal isOpen={Boolean(viewBookingId)} onClose={() => setViewBookingId(null)} title="Replacement Appointment" size="md">
+        {replacementQuery.isLoading ? <p>Loading booking…</p> : replacementQuery.error ? <ErrorState error={replacementQuery.error} onRetry={replacementQuery.refetch} /> : replacementQuery.data && <>
+          <p>Booking: <strong>{replacementQuery.data.id}</strong></p>
+          <p>{replacementQuery.data.patientName} · {replacementQuery.data.patientMrn}</p>
+          <p>{replacementQuery.data.doctorName}</p>
+          <p>{formatDate(replacementQuery.data.date)} at {formatTime(replacementQuery.data.time)}</p>
+          <Badge status={replacementQuery.data.status} />
+          <p>Token: {replacementQuery.data.tokenNumber ?? 'Not confirmed'}</p>
+          {replacementQuery.data.status === 'CHECKED_IN' && replacementQuery.data.date === todayStr && <button type="button" className="btn btn--primary" disabled={printingToken} onClick={() => printPriorToken(replacementQuery.data)}>Print Token</button>}
+        </>}
+      </Modal>
+
+      <Modal isOpen={Boolean(reportingAppt)} onClose={() => { if (!checkInMutation.isPending) setReportingAppt(null); }} title="Patient Reporting & Payment" size="md">
+        {reportingAppt && <>
+          <p><strong>{reportingAppt.patientName}</strong> · {reportingAppt.patientMrn}</p>
+          <p>{reportingAppt.doctorName} · {formatDate(reportingAppt.date)} at {formatTime(reportingAppt.time)}</p>
+          <p>Reporting Window: {reportingTimes(reportingAppt)}</p>
+          {reportingQuote.isLoading ? <p>Calculating fees…</p> : reportingQuote.error ? <ErrorState error={reportingQuote.error} onRetry={reportingQuote.refetch} /> : reportingQuote.data && <>
+            {reportingQuote.data.registrationFeeDue && <p>Unpaid Registration Fee: {Format.money(reportingQuote.data.registrationFee)}</p>}
+            <p>Consultation Fee: {Format.money(reportingQuote.data.consultationFee)}</p>
+            <p><strong>Outstanding Total: {Format.money(reviewedTotal ?? reportingQuote.data.total)}</strong></p>
+            <p className="text-caption">Previously paid fees are retained. Registration is charged once.</p>
+          </>}
+          <label style={{ display: 'flex', gap: '.5rem', marginBottom: '.75rem' }}><input type="checkbox" checked={reportingForm.arrivalConfirmed} onChange={e => setReportingForm(p => ({ ...p, arrivalConfirmed: e.target.checked }))} />Patient is physically present.</label>
+          <label style={{ display: 'flex', gap: '.5rem', marginBottom: '.75rem' }}><input type="checkbox" checked={reportingForm.registrationVerified} onChange={e => setReportingForm(p => ({ ...p, registrationVerified: e.target.checked }))} />I verified the patient's registration details.</label>
+          {(reviewedTotal ?? reportingQuote.data?.total) > 0 && <FormField label="Payment Method" required><select className="form-input" value={reportingForm.method} onChange={e => setReportingForm(p => ({ ...p, method: e.target.value }))}><option value="CASH">Cash</option><option value="CARD">Credit / Debit Card</option><option value="UPI">UPI</option></select></FormField>}
+          {reportingForm.time && <p>Reviewed late-arrival slot: <strong>{formatTime(reportingForm.time)}</strong></p>}
+          {reportingError && <p role="alert">{reportingError}</p>}
+          <button type="button" className="btn btn--primary" disabled={!reportingForm.arrivalConfirmed || !reportingForm.registrationVerified || !reportingQuote.data || Boolean(reportingQuote.error) || reportingQuote.isFetching || checkInMutation.isPending} onClick={() => checkInMutation.mutate()}>
+            {checkInMutation.isPending ? 'Confirming…' : (reviewedTotal ?? reportingQuote.data?.total) > 0 ? 'Confirm Payment & Check In' : 'Confirm Check In'}
+          </button>
+        </>}
+      </Modal>
 
       {/* Cancel Appointment Modal */}
       {cancelModalAppt && (

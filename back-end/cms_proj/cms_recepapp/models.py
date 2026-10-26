@@ -69,6 +69,7 @@ class Appointment(models.Model):
         COMPLETED = "COMPLETED", "Completed"
         CANCELLED = "CANCELLED", "Cancelled"
         NO_SHOW = "NO_SHOW", "No Show"
+        REBOOKED = "REBOOKED", "Arrived Late (Rebooked)"
 
     appointment_id = models.CharField(max_length=15, primary_key=True)
     patient = models.ForeignKey(Patient, on_delete=models.PROTECT, related_name="appointments")

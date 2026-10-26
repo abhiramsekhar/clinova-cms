@@ -4,6 +4,7 @@ const STATUS_COLORS = {
   // Appointments & Consultations
   COMPLETED: 'success',
   CHECKED_IN: 'primary',
+  REBOOKED: 'primary',
   IN_PROGRESS: 'primary',
   CANCELLED: 'danger',
   NO_SHOW: 'warning',
@@ -31,6 +32,7 @@ const STATUS_COLORS = {
 
 const STATUS_LABELS = {
   CHECKED_IN: 'Checked In',
+  REBOOKED: 'Arrived Late (Rebooked)',
   IN_PROGRESS: 'In Progress',
   NO_SHOW: 'No-show',
 };

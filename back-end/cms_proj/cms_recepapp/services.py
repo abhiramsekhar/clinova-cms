@@ -31,60 +31,48 @@ def receptionist_bills(queryset):
     return queryset.filter(pk__in=eligible).exclude(pk__in=other_charges)
 
 
-@transaction.atomic
-def mark_expired_scheduled_appointments(request=None, now=None):
-    """Persist prior-booking NO_SHOW after the configured arrival grace period."""
-    current_time = timezone.localtime(now) if now else timezone.localtime()
-    try:
-        grace_minutes = max(0, int(get_setting("appointment.noShowGraceMinutes", 15)))
-    except (TypeError, ValueError):
-        grace_minutes = 15
-    current_date = current_time.date()
-    pending = Appointment.objects.select_for_update().filter(
-        status=Appointment.Status.SCHEDULED,
-        booking_mode=Appointment.BookingMode.PRIOR,
-        appointment_date__lte=current_date,
-    ).order_by("appointment_date", "time_slot")
-    updated_count = 0
-
-    for appointment in pending:
-        # An explicit late-arrival review protects today's restored booking
-        # while staff completes the separate manual check-in step.
-        if appointment.appointment_date == current_date and AuditLog.objects.filter(
-            action="UNDO_NO_SHOW_APPOINTMENT", entity_type="APPOINTMENT",
-            entity_id=appointment.pk, details__appointmentDate=current_date.isoformat(),
-        ).exists():
-            continue
+def reporting_window(appointment):
+    """Configurable minutes before consultation: open 30, deadline 15."""
+    def minutes(key, default):
         try:
-            scheduled_time = datetime.time.fromisoformat(str(appointment.time_slot))
-        except ValueError:
-            continue
-        scheduled_at = datetime.datetime.combine(appointment.appointment_date, scheduled_time)
-        scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
-        if current_time < scheduled_at + datetime.timedelta(minutes=grace_minutes):
-            continue
+            return max(0, int(get_setting(key, default)))
+        except (TypeError, ValueError):
+            return default
+    deadline = minutes("appointment.reportingDeadlineMinutes", 15)
+    opening = max(deadline, minutes("appointment.reportingStartMinutes", 30))
+    scheduled = timezone.make_aware(datetime.datetime.combine(
+        datetime.date.fromisoformat(str(appointment.appointment_date)), datetime.time.fromisoformat(appointment.time_slot)))
+    return (scheduled - datetime.timedelta(minutes=opening),
+            scheduled - datetime.timedelta(minutes=deadline))
 
-        notes_prefix = f"{appointment.notes}\n" if appointment.notes else ""
-        notes = f"{notes_prefix}Automatically marked No-show after {grace_minutes}-minute arrival grace period"
-        changed = Appointment.objects.filter(
-            pk=appointment.pk,
-            status=Appointment.Status.SCHEDULED,
-        ).update(
-            status=Appointment.Status.NO_SHOW,
-            notes=notes,
-            updated_at=timezone.now(),
-        )
-        if changed:
-            updated_count += changed
-            log_audit(
-                action="AUTO_NO_SHOW_APPOINTMENT",
-                entity_type="APPOINTMENT",
-                entity_id=appointment.appointment_id,
-                details={"graceMinutes": grace_minutes},
-                request=request,
-            )
 
-    return updated_count
+@transaction.atomic
+def mark_expired_scheduled_appointments(request=None, now=None, doctor=None):
+    """Release unreported reservations; never alter payment or token history."""
+    current = now or timezone.localtime()
+    doctors = Doctor.objects.order_by("pk")
+    if doctor is not None:
+        doctors = doctors.filter(pk=doctor.pk)
+    count = 0
+    for doc in doctors.select_for_update():
+        pending = Appointment.objects.select_for_update().filter(
+            doctor=doc, status=Appointment.Status.SCHEDULED,
+            booking_mode=Appointment.BookingMode.PRIOR,
+            appointment_date__lte=current.date())
+        for appointment in pending:
+            try:
+                _, deadline = reporting_window(appointment)
+            except ValueError:
+                continue
+            if current <= deadline:
+                continue
+            appointment.status = Appointment.Status.NO_SHOW
+            appointment.notes = (appointment.notes or "") + "\nReporting deadline missed; reservation released"
+            appointment.save(update_fields=["status", "notes", "updated_at"])
+            log_audit(action="AUTO_NO_SHOW_APPOINTMENT", entity_type="APPOINTMENT",
+                      entity_id=appointment.pk, details={"reportingDeadline": deadline.isoformat()}, request=request)
+            count += 1
+    return count
 
 
 def get_setting(key, fallback=None):
@@ -195,6 +183,7 @@ def get_slot_board(doctor_ident, date_obj, now=None):
     now_minutes = now.hour * 60 + now.minute + now.second / 60 + now.microsecond / 60000000
     cfg = get_slot_config()
 
+    mark_expired_scheduled_appointments(now=now, doctor=doc)
     day_appts = list(Appointment.objects.filter(
         doctor=doc,
         appointment_date=target_date_str
@@ -206,21 +195,21 @@ def get_slot_board(doctor_ident, date_obj, now=None):
     used_tokens = {a["token_number"] for a in day_appts if a["token_number"] is not None}
 
     for s in all_slots:
-        active = next((a for a in day_appts if a["time_slot"] == s["time"]), None)
-        freed = False
+        active = next((a for a in day_appts if a["time_slot"] == s["time"] and a["status"] not in [Appointment.Status.CANCELLED, Appointment.Status.NO_SHOW, Appointment.Status.REBOOKED]), None)
+        freed = not active and any(a["time_slot"] == s["time"] for a in day_appts)
         start_m = time_to_minutes(s["time"])
         end_m = start_m + cfg["step"]
 
         if active:
             state = "booked"
-        # Historical reservations remain blocked; started slots are never offered.
+        # Started slots are never offered, even after release.
         elif target_date_str < today_str or (target_date_str == today_str and start_m < now_minutes):
             state = "past"
         else:
             state = "free"
 
         token = active["token_number"] if active and active["token_number"] is not None else s["token"]
-        if not active and state == "free":
+        if (not active and state == "free") or (active and active["token_number"] is None):
             while token in used_tokens:
                 token += 1
             used_tokens.add(token)

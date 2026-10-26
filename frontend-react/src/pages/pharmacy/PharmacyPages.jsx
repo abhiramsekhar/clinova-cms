@@ -1,14 +1,26 @@
-<<<<<<< Updated upstream
-import React, { useMemo, useState } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { medicinesApi, prescriptionsApi } from '../../api/resources';
+import { useSearchParams, Link, useNavigate } from 'react-router-dom';
+import {
+  medicinesApi as sharedMedicinesApi,
+  prescriptionsApi,
+  stockLedgerApi,
+  suppliersApi,
+} from '../../api/resources';
+import Icon from '../../components/Icon';
 import Badge from '../../components/Badge';
-import { EmptyState, ErrorState, LoadingState } from '../../components/States';
-import { DataTable, Modal, useToast } from '../../components/ui';
-import { formatDate } from '../../utils/format';
-import ModulePage from '../shared/ModulePage';
+import { ErrorState, EmptyState, LoadingState } from '../../components/States';
+import { DataTable, Modal, FormField, ConfirmDialog } from '../../components/ui';
+import { useToast } from '../../context/ToastContext';
+import { Format, formatDate, formatDateTime } from '../../utils/format';
+import PharmacyPageWrapper from './PharmacyPageWrapper';
+import PharmacyDataTable, { PharmacyTableSkeleton } from './PharmacyDataTable';
+import pharmacyDispensingApi from './pharmacyDispensingApi';
+import medicinesApi from './pharmacyInventoryApi';
+import pharmacyPurchaseApi from './pharmacyPurchaseApi';
 
-export function PharmacyQueuePage() {
+// Preserve the upstream basic queue alongside the full pharmacy workflow.
+export function PharmacyBasicQueuePage() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [selectedPrescription, setSelectedPrescription] = useState(null);
@@ -19,7 +31,7 @@ export function PharmacyQueuePage() {
   });
   const medicinesQuery = useQuery({
     queryKey: ['pharmacyMedicineCatalogue'],
-    queryFn: () => medicinesApi.list({ page_size: 500 }),
+    queryFn: () => sharedMedicinesApi.list({ page_size: 500 }),
   });
   const prescriptions = Array.isArray(prescriptionsQuery.data) ? prescriptionsQuery.data : prescriptionsQuery.data?.results || [];
   const medicines = Array.isArray(medicinesQuery.data) ? medicinesQuery.data : medicinesQuery.data?.results || [];
@@ -110,26 +122,8 @@ export function PharmacyQueuePage() {
         </form>}
       </Modal>
     </div>
-=======
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams, Link, useNavigate } from 'react-router-dom';
-import {
-  prescriptionsApi,
-  stockLedgerApi,
-  suppliersApi,
-} from '../../api/resources';
-import Icon from '../../components/Icon';
-import Badge from '../../components/Badge';
-import { ErrorState, EmptyState } from '../../components/States';
-import { Modal, FormField, ConfirmDialog } from '../../components/ui';
-import { useToast } from '../../context/ToastContext';
-import { Format, formatDate, formatDateTime } from '../../utils/format';
-import PharmacyPageWrapper from './PharmacyPageWrapper';
-import PharmacyDataTable, { PharmacyTableSkeleton } from './PharmacyDataTable';
-import pharmacyDispensingApi from './pharmacyDispensingApi';
-import medicinesApi from './pharmacyInventoryApi';
-import pharmacyPurchaseApi from './pharmacyPurchaseApi';
+  );
+}
 
 const PAGE_SIZE = 200;
 const MAX_ORDER_MONTHS = 3;
@@ -1007,7 +1001,6 @@ export function PharmacyQueuePage() {
         </section>
       )}
     </PharmacyPageWrapper>
->>>>>>> Stashed changes
   );
 }
 

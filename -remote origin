@@ -1,0 +1,5 @@
+[33m50cfb34[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Remove unwanted from repository
+[33m5970155[m Implement Doctor module and fix Reception workflows
+[33m1f72036[m R4: Reception Billing with invoice view, print layout, and payment collection
+[33mf90ee78[m R3: Reception Appointments with booking wizard, slot availability, check-in, fee collection, cancel and no-show
+[33m47a161c[m R2: Reception Patients directory and registration wizard with fee collection

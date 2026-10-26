@@ -92,8 +92,8 @@ export const appointmentsApi = {
     const res = await apiClient.post(`/appointments/${id}/cancel/`, data);
     return res.data;
   },
-  checkIn: async (id) => {
-    const res = await apiClient.post(`/appointments/${id}/check-in/`);
+  checkIn: async (id, data = {}) => {
+    const res = await apiClient.post(`/appointments/${id}/check-in/`, data);
     return res.data;
   },
   printToken: async (id) => {
@@ -185,10 +185,10 @@ export const medicinesApi = {
     const res = await apiClient.get('/medicines/', { params });
     return res.data;
   },
-<<<<<<< Updated upstream
   get: async (id) => {
     const res = await apiClient.get(`/medicines/${encodeURIComponent(id)}/`);
-=======
+    return res.data;
+  },
   create: async (data) => {
     const res = await apiClient.post('/medicines/', data);
     return res.data;
@@ -207,7 +207,6 @@ export const medicinesApi = {
   },
   stockAlerts: async () => {
     const res = await apiClient.get('/medicines/stock-alerts/');
->>>>>>> Stashed changes
     return res.data;
   },
 };

@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 
 from cms_backendapp.permissions import IsRole
-from cms_backendapp.models import Staff, Department, Notification
+from cms_backendapp.models import Staff, Department, Notification, AuditLog
 from cms_backendapp.audit import log_audit
 from cms_doctorapp.models import Doctor, ConsultationRecord, Prescription, LabTest
 from .models import Patient, Appointment, Bill, BillItem, Payment
@@ -31,6 +31,7 @@ from .serializers import (
     PaymentSerializer,
 )
 from .services import (
+    reporting_window,
     resolve_doctor,
     receptionist_bills,
     get_slot_board,
@@ -228,19 +229,17 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     pagination_class = ReceptionPagination
 
     def get_permissions(self):
-        if self.action in ["print_token", "undo_no_show"]:
+        if self.action in ["print_token", "undo_no_show", "check_in"]:
             return [IsRole("ADMIN", "RECEPTIONIST")()]
         return [IsRole("ADMIN", "DOCTOR", "RECEPTIONIST")()]
 
     def registration_fee_due(self, patient):
-        """Charge registration only until a positive registration payment exists or a paid visit is completed."""
-        registration_paid = Bill.objects.filter(
-            patient=patient,
-            items__item_type=BillItem.ItemType.REGISTRATION,
-            payments__amount_paid__gt=0,
-        ).exists()
-        if registration_paid:
-            return False
+        """Avoid charging registration again once its amount is covered by saved payments."""
+        for bill in Bill.objects.filter(patient=patient, items__item_type=BillItem.ItemType.REGISTRATION).distinct():
+            registration_total = bill.items.filter(item_type=BillItem.ItemType.REGISTRATION).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+            paid = bill.payments.aggregate(total=Sum("amount_paid"))["total"] or Decimal("0")
+            if registration_total > 0 and paid >= registration_total:
+                return False
 
         completed_visit = Appointment.objects.filter(
             patient=patient,
@@ -269,14 +268,32 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
         consultation = get_consultation_fee(doctor_id)
         registration = get_registration_fee() if self.registration_fee_due(patient) else 0
-        return Response({
-            "patientId": patient.patient_id,
-            "doctorId": doctor.staff.staff_id,
-            "registrationFee": registration,
-            "consultationFee": consultation,
-            "total": registration + consultation,
-            "registrationFeeDue": registration > 0,
-        }, status=status.HTTP_200_OK)
+        quote = {
+            "patientId": patient.patient_id, "doctorId": doctor.staff.staff_id,
+            "registrationFee": registration, "consultationFee": consultation,
+            "total": registration + consultation, "registrationFeeDue": registration > 0,
+        }
+        appointment_id = request.query_params.get("appointmentId")
+        if appointment_id:
+            appointment = Appointment.objects.filter(pk=appointment_id, patient=patient, doctor=doctor).first()
+            if not appointment:
+                raise serializers.ValidationError("Appointment does not match the selected patient and doctor.")
+            bill = appointment.bills.first()
+            if bill:
+                quote["total"] = int(bill.balance_due * 100)
+                quote["registrationFee"] = int((bill.items.filter(item_type=BillItem.ItemType.REGISTRATION).aggregate(total=Sum("amount"))["total"] or 0) * 100)
+                quote["consultationFee"] = int((bill.items.filter(item_type=BillItem.ItemType.CONSULTATION).aggregate(total=Sum("amount"))["total"] or 0) * 100)
+                quote["registrationFeeDue"] = quote["registrationFee"] > 0 and bill.balance_due > 0 and self.registration_fee_due(patient)
+        else:
+            appointment = Appointment(appointment_date=request.query_params.get("date"), time_slot=request.query_params.get("time"))
+        if appointment.appointment_date and appointment.time_slot:
+            try:
+                opening, deadline = reporting_window(appointment)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError("Choose a valid appointment date and time.")
+            quote["reportingStartsAt"] = opening.isoformat()
+            quote["reportingDeadlineAt"] = deadline.isoformat()
+        return Response(quote, status=status.HTTP_200_OK)
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
@@ -430,7 +447,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def book_and_pay(self, request):
         """
-        Books appointment + creates PAID consultation bill + records payment in one transaction.
+        Reserves prior visits without payment; walk-ins pay and check in atomically.
         """
         data = request.data
         patient_id = data.get("patientId")
@@ -440,7 +457,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Invalid payment details.", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
         method = str(payment_info.get("method", "CASH")).upper()
 
-        if payment_info.get("confirmed") is not True:
+        if str(data.get("mode", "PRIOR")).upper() != "PRIOR" and payment_info.get("confirmed") is not True:
             return Response({"detail": "Payment must be explicitly confirmed before booking.", "code": "PAYMENT_NOT_CONFIRMED"}, status=status.HTTP_400_BAD_REQUEST)
         if method not in ["CASH", "CARD", "UPI"]:
             return Response({"detail": "Please select a valid payment method (CASH, CARD, UPI).", "code": "VALIDATION_ERROR"}, status=status.HTTP_400_BAD_REQUEST)
@@ -469,7 +486,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         consultation_paise = get_consultation_fee(doc_ident)
         registration_paise = get_registration_fee() if self.registration_fee_due(patient) else 0
         total_paise = consultation_paise + registration_paise
-        if data.get("expectedTotal") is not None:
+        if str(data.get("mode", "PRIOR")).upper() != "PRIOR" and data.get("expectedTotal") is not None:
             try:
                 expected_total = int(data["expectedTotal"])
             except (TypeError, ValueError):
@@ -578,6 +595,10 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             created_by=staff,
         )
 
+        if mode == "PRIOR":
+            return Response({"appointment": AppointmentSerializer(appointment).data, "bill": None},
+                            status=status.HTTP_201_CREATED)
+
         total_decimal = Decimal(total_paise) / Decimal("100")
 
         bill = Bill.objects.create(
@@ -653,7 +674,12 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         if conflicts.exists():
             raise serializers.ValidationError({"detail": "Another active appointment conflicts with this reservation. Review before proceeding.", "code": "APPOINTMENT_CONFLICT"})
         bill = appt.bills.select_for_update().first()
-        if not bill or bill.payment_status != Bill.PaymentStatus.PAID or bill.amount_paid < bill.total_amount:
+        if bill is None:
+            reassignment = AuditLog.objects.filter(action="LATE_ARRIVAL_REASSIGNED", details__replacementId=appt.pk).first()
+            if reassignment:
+                bill = Bill.objects.select_for_update().get(pk=reassignment.details["billId"])
+        recorded = (bill.payments.aggregate(total=Sum("amount_paid"))["total"] or Decimal("0")) if bill else Decimal("0")
+        if not bill or bill.payment_status != Bill.PaymentStatus.PAID or recorded < bill.total_amount or recorded != bill.amount_paid:
             raise serializers.ValidationError({"detail": "The appointment bill must be fully paid.", "code": "PAYMENT_REQUIRED"})
 
     @action(detail=True, methods=["post"], url_path="print-token")
@@ -668,60 +694,129 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="undo-no-show")
     @transaction.atomic
     def undo_no_show(self, request, pk=None):
-        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
-        if appt.status != Appointment.Status.NO_SHOW:
-            raise serializers.ValidationError({"detail": "Only No-show appointments can be restored.", "code": "INVALID_STATE"})
-        if request.data.get("arrivalConfirmed") is not True:
-            raise serializers.ValidationError({"detail": "Confirm the patient's physical arrival first.", "code": "ARRIVAL_NOT_CONFIRMED"})
-        self.validate_prior_arrival(appt)
-        appt.status = Appointment.Status.SCHEDULED
-        staff = getattr(request.user, "staff", None)
-        actor = staff.name if staff else "Staff"
-        appt.notes = (f"{appt.notes}\n" if appt.notes else "") + f"No-show undone by {actor}: late arrival confirmed; awaiting manual check-in"
-        appt.save(update_fields=["status", "notes", "updated_at"])
-        log_audit(action="UNDO_NO_SHOW_APPOINTMENT", entity_type="APPOINTMENT", entity_id=appt.pk,
-                  details={"appointmentDate": appt.appointment_date.isoformat(), "arrivalConfirmed": True, "previousStatus": "NO_SHOW", "status": "SCHEDULED"}, request=request)
-        return Response(self.get_serializer(appt).data)
+        self.get_object()
+        return Response({"detail": "Use check-in to review an available late-arrival slot, payment and arrival.",
+                         "code": "REPORT_REQUIRED"}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=["post"], url_path="check-in")
+    @booking_database_errors
     @transaction.atomic
     def check_in(self, request, pk=None):
-        """Checks in an appointment if same day and fee paid."""
-        mark_expired_scheduled_appointments(request=request)
-        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
-        today = timezone.localdate()
-
-        if appt.status != Appointment.Status.SCHEDULED:
-            return Response(
-                {"detail": f"Cannot check in an appointment with status {appt.status}.", "code": "INVALID_STATE"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if appt.appointment_date != today:
-            return Response(
-                {"detail": "Check-in is only possible on the appointment date.", "code": "INVALID_STATE"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        """Report, collect outstanding fees and confirm the saved reservation atomically."""
+        original = self.get_object()
+        # Match booking lock order: patient, doctor, appointment, bill.
+        patient = Patient.objects.select_for_update().get(pk=original.patient_id)
+        doctor = Doctor.objects.select_for_update().get(pk=original.doctor_id)
+        appt = Appointment.objects.select_for_update().get(pk=original.pk)
+        if appt.status in [Appointment.Status.CHECKED_IN, Appointment.Status.IN_PROGRESS, Appointment.Status.COMPLETED]:
+            return Response(self.get_serializer(appt).data)
         if appt.booking_mode == Appointment.BookingMode.PRIOR:
-            self.validate_prior_arrival(appt)
-
-        bill = appt.bills.first()
-        if not bill or bill.payment_status != Bill.PaymentStatus.PAID:
-            return Response(
-                {"detail": "The appointment bill must be fully paid before check-in.", "code": "PAYMENT_REQUIRED"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+            prior_report = AuditLog.objects.filter(action="LATE_ARRIVAL_REASSIGNED", entity_type="APPOINTMENT", entity_id=appt.pk).first()
+            if prior_report:
+                replacement = Appointment.objects.filter(pk=prior_report.details.get("replacementId")).first()
+                if not replacement:
+                    raise serializers.ValidationError("The linked replacement is missing; review the appointment history.")
+                # Legacy audit links are authoritative too; never create a second replacement.
+                if appt.status == Appointment.Status.NO_SHOW:
+                    appt.status = Appointment.Status.REBOOKED
+                    appt.save(update_fields=["status", "updated_at"])
+                return Response(self.get_serializer(replacement).data)
+        if appt.status not in [Appointment.Status.SCHEDULED, Appointment.Status.NO_SHOW]:
+            raise serializers.ValidationError("This appointment cannot be checked in.")
+        if appt.booking_mode == Appointment.BookingMode.WALK_IN:
+            # Retain the pre-existing Walk-in retry behavior unchanged.
+            prior_report = AuditLog.objects.filter(action="LATE_ARRIVAL_REASSIGNED", entity_type="APPOINTMENT", entity_id=appt.pk).first()
+            if prior_report:
+                replacement = Appointment.objects.get(pk=prior_report.details["replacementId"])
+                return Response(self.get_serializer(replacement).data)
+        now = timezone.localtime()
+        if appt.appointment_date != now.date():
+            raise serializers.ValidationError("Check-in is only available on the appointment date.")
+        if request.data.get("arrivalConfirmed") is not True or request.data.get("registrationVerified") is not True:
+            raise serializers.ValidationError("Confirm physical arrival and verify registration details.")
+        if not patient.is_active:
+            raise serializers.ValidationError("Patient is inactive.")
+        opening, deadline = reporting_window(appt)
+        if appt.booking_mode == Appointment.BookingMode.PRIOR and now < opening:
+            raise serializers.ValidationError("The reporting window has not opened.")
+        board = get_slot_board(doctor.pk, appt.appointment_date, now=now)
+        appt.refresh_from_db()
+        own = next((s for s in board if s["time"] == appt.time_slot), None)
+        late = now > deadline or appt.status == Appointment.Status.NO_SHOW
+        target = own
+        if late and (not own or own["state"] != "free"):
+            target = next((s for s in board if s["state"] == "free"), None)
+        if not target or (not late and target["appointmentId"] != appt.pk):
+            raise serializers.ValidationError("No eligible slot is available.")
+        if late and request.data.get("time") != target["time"]:
+            raise serializers.ValidationError({"code": "SLOT_REVIEW_REQUIRED", "time": target["time"],
+                                               "detail": "Confirm the available late-arrival slot."})
+        payment = request.data.get("payment") or {}
+        if not isinstance(payment, dict):
+            raise serializers.ValidationError("Invalid payment details.")
+        method = str(payment.get("method", "CASH")).upper()
+        bill = appt.bills.select_for_update().first()
+        staff = getattr(request.user, "staff", None)
+        if bill is None:
+            consultation = Decimal(get_consultation_fee(doctor.pk)) / 100
+            registration = Decimal(get_registration_fee() if self.registration_fee_due(patient) else 0) / 100
+            bill = Bill.objects.create(patient=patient, appointment=appt, bill_date=now.date(),
+                                       total_amount=consultation + registration, generated_by=staff)
+            for kind, amount in [(BillItem.ItemType.CONSULTATION, consultation), (BillItem.ItemType.REGISTRATION, registration)]:
+                if amount:
+                    BillItem.objects.create(bill=bill, item_type=kind,
+                                            source_id=appt.pk, description=kind, amount=amount)
+        if bill.payment_status == Bill.PaymentStatus.CANCELLED:
+            raise serializers.ValidationError("Review the cancelled bill before reporting.")
+        recorded = bill.payments.aggregate(total=Sum("amount_paid"))["total"] or Decimal("0")
+        if recorded != bill.amount_paid:
+            raise serializers.ValidationError("Bill totals disagree with saved payments; review the bill.")
+        if bill.balance_due > 0:
+            if payment.get("confirmed") is not True or method not in ["CASH", "CARD", "UPI"]:
+                raise serializers.ValidationError("Confirm full payment with a valid payment method.")
+            required = int(bill.balance_due * 100)
+            if request.data.get("expectedTotal") != required:
+                raise serializers.ValidationError({"code": "QUOTE_CHANGED", "total": required})
+            Payment.objects.create(bill=bill, amount_paid=bill.balance_due, payment_date=now.date(),
+                                   payment_method=method, transaction_ref=payment.get("transactionRef"), received_by=staff)
+            bill.refresh_from_db()
+        recorded = bill.payments.aggregate(total=Sum("amount_paid"))["total"] or Decimal("0")
+        if bill.payment_status != Bill.PaymentStatus.PAID or recorded < bill.total_amount or recorded != bill.amount_paid:
+            raise serializers.ValidationError("Full payment has not succeeded.")
+        token = appt.token_number or target["token"]
+        used_tokens = set(Appointment.objects.filter(doctor=doctor, appointment_date=appt.appointment_date)
+                          .exclude(pk=appt.pk).values_list("token_number", flat=True))
+        if appt.token_number is not None and token in used_tokens and target["time"] == appt.time_slot:
+            raise serializers.ValidationError({"code": "APPOINTMENT_CONFLICT", "detail": "The saved token conflicts with historical records; review the appointment."})
+        while token in used_tokens:
+            token += 1
+        if late and target["time"] != appt.time_slot:
+            # A new visit preserves the original reservation, token and bill history.
+            replacement = Appointment.objects.create(patient=patient, doctor=doctor, department=appt.department,
+                appointment_date=appt.appointment_date, time_slot=target["time"], booking_mode=appt.booking_mode,
+                appointment_type=appt.appointment_type, status=Appointment.Status.CHECKED_IN,
+                token_number=target["token"], created_by=staff, notes=f"Late arrival for {appt.pk}; payment retained on bill {bill.pk}")
+            appt.notes = (appt.notes or "") + f"\nLate arrival checked in as {replacement.pk}; bill {bill.pk}"
+            if appt.booking_mode == Appointment.BookingMode.PRIOR:
+                appt.status = Appointment.Status.REBOOKED
+            appt.save(update_fields=["status", "notes", "updated_at"])
+            log_audit(action="LATE_ARRIVAL_REASSIGNED", entity_type="APPOINTMENT", entity_id=appt.pk,
+                      details={"replacementId": replacement.pk, "billId": bill.pk}, request=request)
+            return Response(self.get_serializer(replacement).data)
+        appt.token_number = token
         appt.status = Appointment.Status.CHECKED_IN
-        appt.save(update_fields=["status", "updated_at"])
-        return Response(self.get_serializer(appt).data, status=status.HTTP_200_OK)
+        appt.save(update_fields=["status", "token_number", "updated_at"])
+        return Response(self.get_serializer(appt).data)
 
     @action(detail=True, methods=["post"], url_path="cancel")
     @transaction.atomic
     def cancel(self, request, pk=None):
         """Cancels an appointment without refunding any payments."""
-        appt = Appointment.objects.select_for_update().get(pk=self.get_object().pk)
+        original = self.get_object()
+        Doctor.objects.select_for_update().get(pk=original.doctor_id)
+        appt = Appointment.objects.select_for_update().get(pk=original.pk)
+        if appt.status == Appointment.Status.CANCELLED:
+            return Response(self.get_serializer(appt).data)
         reason = str(request.data.get("reason", "")).strip()
         if not reason:
             return Response(
@@ -746,11 +841,6 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         notes_prefix = f"{appt.notes}\n" if appt.notes else ""
         appt.notes = f"{notes_prefix}Cancelled by {cancelled_by_name}: {reason}"
         appt.save(update_fields=["status", "notes", "updated_at"])
-
-        bill = appt.bills.first()
-        if bill and bill.payment_status != Bill.PaymentStatus.CANCELLED:
-            bill.payment_status = Bill.PaymentStatus.CANCELLED
-            bill.save(update_fields=["payment_status", "updated_at"])
 
         log_audit(
             action="CANCEL_APPOINTMENT",

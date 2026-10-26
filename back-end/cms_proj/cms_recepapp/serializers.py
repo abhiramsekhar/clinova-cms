@@ -264,7 +264,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
     time = serializers.CharField(source="time_slot")
     bookingMode = serializers.CharField(source="booking_mode", read_only=True)
     type = serializers.CharField(source="appointment_type", default="New Visit")
-    # Tokens are generated only by the atomic book-and-pay flow after payment.
+    # Tokens are confirmed by walk-in payment or prior reporting after payment.
     tokenNumber = serializers.IntegerField(source="token_number", read_only=True, allow_null=True)
     billId = serializers.SerializerMethodField()
     billStatus = serializers.SerializerMethodField()
@@ -324,16 +324,37 @@ class AppointmentSerializer(serializers.ModelSerializer):
             "name": dept.name,
         }
 
+    def appointment_bill(self, obj):
+        bill = obj.bills.first()
+        if bill is None:
+            from cms_backendapp.models import AuditLog
+            from .models import Bill
+            reassignment = AuditLog.objects.filter(action="LATE_ARRIVAL_REASSIGNED", details__replacementId=obj.pk).first()
+            if reassignment:
+                bill = Bill.objects.filter(pk=reassignment.details["billId"]).first()
+        return bill
+
     def get_billId(self, obj):
-        first_bill = obj.bills.first()
-        return first_bill.bill_id if first_bill else None
+        bill = self.appointment_bill(obj)
+        return bill.bill_id if bill else None
 
     def get_billStatus(self, obj):
-        first_bill = obj.bills.first()
-        return first_bill.payment_status if first_bill else None
+        bill = self.appointment_bill(obj)
+        return bill.payment_status if bill else None
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
+        if instance.booking_mode == Appointment.BookingMode.PRIOR:
+            from .services import reporting_window
+            opening, deadline = reporting_window(instance)
+            ret["reportingStartsAt"] = opening.isoformat()
+            ret["reportingDeadlineAt"] = deadline.isoformat()
+            from cms_backendapp.models import AuditLog
+            reassignment = AuditLog.objects.filter(action="LATE_ARRIVAL_REASSIGNED", entity_type="APPOINTMENT", entity_id=instance.pk).first()
+            ret["replacementAppointmentId"] = reassignment.details.get("replacementId") if reassignment else None
+            ret["lateArrivalHandled"] = instance.status == Appointment.Status.REBOOKED or bool(reassignment)
+        ret["tokenConfirmed"] = instance.token_number is not None and instance.status in [
+            Appointment.Status.CHECKED_IN, Appointment.Status.IN_PROGRESS, Appointment.Status.COMPLETED]
         # Convenience flat fields for frontend compatibility
         if instance.patient:
             ret["patientId"] = instance.patient.patient_id
