@@ -304,3 +304,46 @@ class AdminStaffFlowTests(APITestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertIn("name", invalid.data)
         self.assertIn("typicalMedicines", invalid.data)
+
+    def test_department_head_doctor_can_be_assigned_cleared_and_must_be_a_doctor(self):
+        doctor_role = Role.objects.create(role_id="DOCTOR", role_name="Doctor")
+        doctor = Staff.objects.create(name="Department Doctor", role=doctor_role, designation="Cardiologist")
+        receptionist_role = Role.objects.create(role_id="RECEPTIONIST", role_name="Receptionist")
+        receptionist = Staff.objects.create(name="Front Desk", role=receptionist_role)
+
+        created = self.client.post("/api/admin/departments/", {
+            "name": "Cardiology Unit",
+            "code": "CARD-UNIT",
+            "defaultFee": 50000,
+            "headDoctorIdInput": doctor.pk,
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["headDoctorId"], doctor.pk)
+        self.assertEqual(created.data["headDoctorName"], doctor.name)
+        self.assertEqual(Department.objects.get(pk=created.data["id"]).head_doctor_id, doctor.pk)
+
+        invalid = self.client.patch(
+            f"/api/admin/departments/{created.data['id']}/",
+            {"headDoctorIdInput": receptionist.pk},
+            format="json",
+        )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn("headDoctorIdInput", invalid.data)
+
+        cleared = self.client.patch(
+            f"/api/admin/departments/{created.data['id']}/",
+            {"headDoctorIdInput": ""},
+            format="json",
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.data)
+        self.assertIsNone(cleared.data["headDoctorId"])
+
+    def test_department_doctor_list_can_be_filtered_by_doctor_role(self):
+        doctor_role = Role.objects.create(role_id="DOCTOR", role_name="Doctor")
+        doctor = Staff.objects.create(name="Selectable Doctor", role=doctor_role)
+        receptionist_role = Role.objects.create(role_id="RECEPTIONIST", role_name="Receptionist")
+        Staff.objects.create(name="Not a Doctor", role=receptionist_role)
+
+        response = self.client.get("/api/admin/staff/", {"role": "DOCTOR"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data["results"]], [doctor.pk])

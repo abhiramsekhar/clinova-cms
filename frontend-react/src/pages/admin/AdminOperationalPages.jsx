@@ -165,7 +165,7 @@ export function AdminUsersPage() {
   );
 }
 
-const EMPTY_DEPARTMENT = { name: '', code: '', description: '', defaultFeeRupees: '', isBookable: true, isActive: true };
+const EMPTY_DEPARTMENT = { name: '', code: '', description: '', defaultFeeRupees: '', headDoctorId: '', isBookable: true, isActive: true };
 
 export function AdminDepartmentsPage() {
   const client = useQueryClient();
@@ -177,6 +177,7 @@ export function AdminDepartmentsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [formError, setFormError] = useState('');
   const departmentQuery = useQuery({ queryKey: ['adminDepartments'], queryFn: () => fetchAllPages(departmentsApi.list) });
+  const doctorsQuery = useQuery({ queryKey: ['adminDepartmentDoctors'], queryFn: () => fetchAllPages(adminApi.staff, { role: 'DOCTOR' }) });
   const saveMutation = useMutation({
     mutationFn: ({ id, data }) => id ? departmentsApi.update(id, data) : departmentsApi.create(data),
     onSuccess: async (_data, vars) => { toast.success(vars.id ? 'Department updated.' : 'Department created.'); setFormOpen(false); setFormError(''); await client.invalidateQueries({ queryKey: ['adminDepartments'] }); },
@@ -194,7 +195,7 @@ export function AdminDepartmentsPage() {
     { key: 'defaultFee', label: 'Consultation Fee', sortable: true, render: (row) => formatPaise(row.defaultFee) },
     { key: 'isBookable', label: 'Bookings', render: (row) => <Badge status={row.isBookable ? 'ACTIVE' : 'INACTIVE'}>{row.isBookable ? 'Bookable' : 'Not bookable'}</Badge> },
     { key: 'isActive', label: 'Status', render: (row) => <Badge status={row.isActive ? 'ACTIVE' : 'INACTIVE'}>{row.isActive ? 'Active' : 'Inactive'}</Badge> },
-    { key: 'actions', label: 'Actions', render: (row) => <button type="button" className="btn btn--secondary btn--sm" onClick={() => { setEditingId(row.id); setForm({ name: row.name || '', code: row.code || '', description: row.description || '', defaultFeeRupees: (Number(row.defaultFee || 0) / 100).toFixed(2), isBookable: Boolean(row.isBookable), isActive: Boolean(row.isActive) }); setFormError(''); setFormOpen(true); }}>Edit</button> },
+    { key: 'actions', label: 'Actions', render: (row) => <button type="button" className="btn btn--secondary btn--sm" onClick={() => { setEditingId(row.id); setForm({ name: row.name || '', code: row.code || '', description: row.description || '', defaultFeeRupees: (Number(row.defaultFee || 0) / 100).toFixed(2), headDoctorId: row.headDoctorId || '', isBookable: Boolean(row.isBookable), isActive: Boolean(row.isActive) }); setFormError(''); setFormOpen(true); }}>Edit</button> },
   ], []);
   const openCreate = () => { setEditingId(''); setForm({ ...EMPTY_DEPARTMENT }); setFormError(''); setFormOpen(true); };
   const submit = (event) => {
@@ -203,7 +204,7 @@ export function AdminDepartmentsPage() {
     if (!form.name.trim()) return setFormError('Enter a department name.');
     if (form.code.length > 15) return setFormError('Department code must be 15 characters or fewer.');
     if (!Number.isFinite(fee) || fee < 0) return setFormError('Enter a valid non-negative consultation fee.');
-    saveMutation.mutate({ id: editingId || null, data: { name: form.name.trim(), code: form.code.trim() || null, description: form.description.trim(), defaultFee: Math.round(fee * 100), isBookable: form.isBookable, isActive: form.isActive } });
+    saveMutation.mutate({ id: editingId || null, data: { name: form.name.trim(), code: form.code.trim() || null, description: form.description.trim(), defaultFee: Math.round(fee * 100), headDoctorIdInput: form.headDoctorId, isBookable: form.isBookable, isActive: form.isActive } });
   };
   return (
     <div>
@@ -223,10 +224,19 @@ export function AdminDepartmentsPage() {
             <FormField label="Code" htmlFor="department-code" hint="Optional; must be unique."><input id="department-code" className="form-control" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} maxLength={15} /></FormField>
             <FormField label="Consultation fee (₹)" htmlFor="department-fee" required><input id="department-fee" type="number" min="0" step="0.01" className="form-control" value={form.defaultFeeRupees} onChange={(event) => setForm({ ...form, defaultFeeRupees: event.target.value })} required /></FormField>
             <FormField label="Description" htmlFor="department-description"><input id="department-description" className="form-control" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} maxLength={255} /></FormField>
+            <FormField label="Head doctor" htmlFor="department-head-doctor" error={doctorsQuery.error ? 'Doctor list could not be loaded.' : undefined} hint="Select an existing staff member with the Doctor role.">
+              <select id="department-head-doctor" className="form-control" value={form.headDoctorId} onChange={(event) => setForm({ ...form, headDoctorId: event.target.value })} disabled={doctorsQuery.isLoading || Boolean(doctorsQuery.error)}>
+                <option value="">No head doctor assigned</option>
+                {(doctorsQuery.data || []).map((doctor) => <option key={doctor.id} value={doctor.id}>{doctor.name}{doctor.designation ? ` - ${doctor.designation}` : ''}{doctor.isActive ? '' : ' (Inactive)'}</option>)}
+              </select>
+              {doctorsQuery.error && <button type="button" className="btn btn--ghost btn--sm" onClick={() => doctorsQuery.refetch()}>Retry doctor list</button>}
+              {doctorsQuery.isLoading && <span className="text-caption">Loading doctors...</span>}
+              {!doctorsQuery.isLoading && !doctorsQuery.error && doctorsQuery.data?.length === 0 && <span className="text-caption">No doctor records are available yet.</span>}
+            </FormField>
             <label className="form-check"><input type="checkbox" checked={form.isBookable} onChange={(event) => setForm({ ...form, isBookable: event.target.checked })} /> Allow patient bookings</label>
             <label className="form-check"><input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} /> Active</label>
           </div>
-          <p className="text-caption">The current head doctor is read-only in the Department API and cannot be changed here.</p>
+          <p className="text-caption">The head doctor must already exist in Staff Management with the Doctor role. Leave it unassigned to clear the current head doctor.</p>
         </form>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1rem' }}><button type="button" className="btn btn--secondary" onClick={() => setFormOpen(false)} disabled={saveMutation.isPending}>Cancel</button><button type="submit" form="department-form" className="btn btn--primary" disabled={saveMutation.isPending}>{saveMutation.isPending ? 'Saving…' : 'Save Department'}</button></div>
       </Modal>
