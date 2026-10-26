@@ -175,7 +175,7 @@ class Command(BaseCommand):
             ("staff-rec-01", "Anjali Menon", "Senior Receptionist", None, "RECEPTIONIST", "+91-9846123456", "anjali@clinova.in", "../../assets/images/staff/reception-anjali.svg", True, -350),
             ("staff-rec-02", "Deepa Vijayan", "Receptionist", None, "RECEPTIONIST", "+91-9846234567", "deepa@clinova.in", "../../assets/images/staff/reception-deepa.svg", True, -330),
             # Pharmacists
-            ("staff-pharm-01", "Lakshmi Devi", "Chief Pharmacist", None, "PHARMACIST", "+91-9847123456", "lakshmi@clinova.in", "../../assets/images/staff/pharmacy-lakshmi.svg", True, -340),
+            ("staff-pharm-01", "Abhijith A S", "Chief Pharmacist", None, "PHARMACIST", "+91-9847123456", "lakshmi@clinova.in", "../../assets/images/staff/pharmacy-lakshmi.svg", True, -340),
             ("staff-pharm-02", "Vishnu Prasad", "Pharmacist", None, "PHARMACIST", "+91-9847234567", "vishnu@clinova.in", "../../assets/images/staff/pharmacy-vishnu.svg", True, -310),
             # Lab Technicians
             ("staff-lab-01", "Arjun Pillai", "Senior Lab Technician", None, "LAB_TECH", "+91-9848123456", "arjun@clinova.in", "../../assets/images/staff/lab-arjun.svg", True, -320),
@@ -187,7 +187,7 @@ class Command(BaseCommand):
         for sid, name, desig, did, rid, phone, email, avatar, active, join_days in staff_data:
             dept = Department.objects.filter(pk=did).first() if did else None
             role = Role.objects.get(pk=rid)
-            Staff.objects.get_or_create(
+            staff_member, created = Staff.objects.get_or_create(
                 staff_id=sid,
                 defaults={
                     "name": name,
@@ -201,6 +201,9 @@ class Command(BaseCommand):
                     "date_joined": d(join_days),
                 },
             )
+            if not created and sid == "staff-pharm-01" and staff_member.name != name:
+                staff_member.name = name
+                staff_member.save(update_fields=["name", "updated_at"])
 
         # Link Department head doctors
         dept_heads = {
@@ -452,7 +455,26 @@ class Command(BaseCommand):
         for mid, name, generic, cat, form, strength, mfr, price, batches, reorder in medicines_def:
             total_qty = sum(b.get("quantity", 0) for b in batches)
             exp_date = batches[0]["expiryDate"] if batches else None
-            Medicine.objects.get_or_create(
+            counter_capacity = 100
+            counter_remaining = counter_capacity
+            normalized_batches = []
+            for batch in batches:
+                batch_quantity = max(0, int(batch.get("quantity", 0)))
+                counter_quantity = min(batch_quantity, counter_remaining)
+                storage_quantity = batch_quantity - counter_quantity
+                counter_remaining -= counter_quantity
+                for location, quantity in (
+                    ("COUNTER", counter_quantity),
+                    ("STORAGE", storage_quantity),
+                ):
+                    if quantity:
+                        normalized_batches.append({
+                            **batch,
+                            "quantity": quantity,
+                            "location": location,
+                        })
+
+            Medicine.objects.update_or_create(
                 medicine_id=mid,
                 defaults={
                     "name": name,
@@ -463,8 +485,10 @@ class Command(BaseCommand):
                     "manufacturer": mfr,
                     "selling_price": to_dec(price),
                     "cost_price": to_dec(int(price * 0.7)),
-                    "batches": batches,
-                    "stock_quantity": total_qty,
+                    "batches": normalized_batches,
+                    "stock_quantity": min(total_qty, counter_capacity),
+                    "storage_quantity": max(0, total_qty - counter_capacity),
+                    "counter_capacity": counter_capacity,
                     "reorder_threshold": reorder,
                     "expiry_date": exp_date,
                     "is_active": True,
@@ -551,8 +575,30 @@ class Command(BaseCommand):
             ("sup-03", "Aarogya Healthcare Solutions", "Prashant Nair", "+91-495-2789012", "sales@aarogya.in", "Mavoor Rd, Kozhikode", ["med-15", "med-16", "med-17", "med-18", "med-19", "med-20", "med-21"]),
             ("sup-04", "South India Pharma Corp", "Jayesh Varghese", "+91-487-2890123", "corp@sipharmacorp.in", "Round South, Thrissur", ["med-22", "med-23", "med-24", "med-25", "med-26", "med-27", "med-28"]),
         ]
+        supplier_price_overrides = {
+            "med-01": 120,
+            "med-02": 650,
+            "med-03": 950,
+            "med-07": 160,
+            "med-09": 400,
+            "med-10": 320,
+            "med-11": 240,
+            "med-15": 12000,
+            "med-24": 320,
+            "med-26": 7000,
+        }
         for sup_id, sname, cperson, sphone, semail, saddr, typical in suppliers_def:
-            Supplier.objects.get_or_create(
+            catalogue = [
+                {
+                    "medicineId": medicine_id,
+                    "fixedUnitPrice": supplier_price_overrides.get(
+                        medicine_id,
+                        int(Medicine.objects.get(pk=medicine_id).cost_price * 100),
+                    ),
+                }
+                for medicine_id in typical
+            ]
+            Supplier.objects.update_or_create(
                 supplier_id=sup_id,
                 defaults={
                     "name": sname,
@@ -560,29 +606,53 @@ class Command(BaseCommand):
                     "phone": sphone,
                     "email": semail,
                     "address": saddr,
-                    "typical_medicines": typical,
+                    "typical_medicines": catalogue,
                     "is_active": True,
                 },
             )
 
         # 12. PURCHASE ORDERS (6)
         pos_def = [
-            ("po-001", "sup-01", [{"medicineId": "med-01", "name": "Paracetamol 500mg", "quantityOrdered": 500, "unitCost": 120, "quantityReceived": 500}, {"medicineId": "med-02", "name": "Amoxicillin 500mg", "quantityOrdered": 300, "unitCost": 650, "quantityReceived": 300}], "RECEIVED", 25500000, -60, -53, -55, "Regular monthly order", "staff-pharm-01"),
-            ("po-002", "sup-02", [{"medicineId": "med-09", "name": "Atorvastatin 10mg", "quantityOrdered": 250, "unitCost": 400, "quantityReceived": 250}, {"medicineId": "med-10", "name": "Losartan 50mg", "quantityOrdered": 300, "unitCost": 320, "quantityReceived": 300}], "RECEIVED", 19600000, -45, -38, -40, None, "staff-pharm-01"),
-            ("po-003", "sup-03", [{"medicineId": "med-15", "name": "Salbutamol Inhaler", "quantityOrdered": 60, "unitCost": 12000, "quantityReceived": 60}], "RECEIVED", 72000000, -30, -23, -25, "Urgent order", "staff-pharm-02"),
-            ("po-004", "sup-04", [{"medicineId": "med-26", "name": "Ceftriaxone 1g Inj", "quantityOrdered": 50, "unitCost": 7000, "quantityReceived": 30}, {"medicineId": "med-24", "name": "Calcium + Vit D3", "quantityOrdered": 500, "unitCost": 320, "quantityReceived": 500}], "PARTIALLY_RECEIVED", 51000000, -15, -8, -10, "Ceftriaxone partial", "staff-pharm-01"),
-            ("po-005", "sup-01", [{"medicineId": "med-03", "name": "Azithromycin 250mg", "quantityOrdered": 200, "unitCost": 950, "quantityReceived": 0}, {"medicineId": "med-07", "name": "Cetirizine 10mg", "quantityOrdered": 400, "unitCost": 160, "quantityReceived": 0}], "ORDERED", 25400000, -5, 2, None, None, "staff-pharm-02"),
-            ("po-006", "sup-02", [{"medicineId": "med-11", "name": "Metoprolol 25mg", "quantityOrdered": 200, "unitCost": 240, "quantityReceived": 0}], "DRAFT", 4800000, 0, None, None, "Pending approval", "staff-pharm-01"),
+            ("po-001", "sup-01", [("med-01", 400, "B2025A01", 180), ("med-02", 300, "B2025A02", 365)], "STOCKING", -60, -53, -52, "Regular monthly order", "staff-pharm-01"),
+            ("po-002", "sup-02", [("med-09", 250, "B2025A09", 280), ("med-10", 300, "B2025A10", 350)], "STOCKING", -45, -38, -37, None, "staff-pharm-01"),
+            ("po-003", "sup-03", [("med-15", 60, "B2025A15", 300)], "STOCKING", -30, -23, -22, "Urgent order", "staff-pharm-02"),
+            ("po-004", "sup-04", [("med-26", 50, "B2025A26", 180), ("med-24", 400, "B2025A24", 400)], "CANCELLED", -15, None, None, "Cancelled before delivery", "staff-pharm-01"),
+            ("po-005", "sup-01", [("med-03", 200, "B2025A03-PO5", 270), ("med-07", 400, "B2025A07-PO5", 200)], "ORDERED", -5, 7, None, None, "staff-pharm-02"),
+            ("po-006", "sup-02", [("med-11", 200, "B2025A11-PO6", 290)], "CANCELLED", 0, None, None, "Cancelled demo order", "staff-pharm-01"),
         ]
-        for poid, supid, items, stat, tot, oday, eday, rday, notes, staff_creator in pos_def:
+        for poid, supid, item_specs, stat, oday, eday, rday, notes, staff_creator in pos_def:
             sup = Supplier.objects.get(pk=supid)
             creator = Staff.objects.filter(pk=staff_creator).first()
-            PurchaseOrder.objects.get_or_create(
+            catalogue_prices = {
+                entry["medicineId"]: entry["fixedUnitPrice"]
+                for entry in sup.typical_medicines
+            }
+            items = []
+            for medicine_id, quantity, batch_no, expiry_offset in item_specs:
+                medicine = Medicine.objects.get(pk=medicine_id)
+                unit_cost = catalogue_prices[medicine_id]
+                item = {
+                    "medicineId": medicine_id,
+                    "name": medicine.name,
+                    "quantity": quantity,
+                    "unitCost": unit_cost,
+                    "lineTotal": quantity * unit_cost,
+                }
+                if stat == PurchaseOrder.Status.STOCKING:
+                    item.update({
+                        "deliveredQuantity": quantity,
+                        "batchNo": batch_no,
+                        "deliveredExpiryDate": str(d(expiry_offset)),
+                    })
+                items.append(item)
+
+            total_amount = sum(item["lineTotal"] for item in items)
+            PurchaseOrder.objects.update_or_create(
                 order_id=poid,
                 defaults={
                     "supplier": sup,
                     "status": stat,
-                    "total_amount": to_dec(tot),
+                    "total_amount": to_dec(total_amount),
                     "order_date": d(oday),
                     "expected_date": d(eday) if eday else None,
                     "received_date": d(rday) if rday else None,
@@ -594,7 +664,7 @@ class Command(BaseCommand):
 
         # 13. STOCK LEDGER (5)
         stock_specs = [
-            ("sl-001", "med-01", "B2025A01", "PURCHASE", 500, "po-001", "PO received", "staff-pharm-01"),
+            ("sl-001", "med-01", "B2025A01", "PURCHASE", 400, "po-001", "PO received", "staff-pharm-01"),
             ("sl-002", "med-02", "B2025A02", "PURCHASE", 300, "po-001", "PO received", "staff-pharm-01"),
             ("sl-003", "med-01", "B2025A01", "DISPENSE", -15, "rx-002", "Dispensed", "staff-pharm-01"),
             ("sl-004", "med-05", "B2025A05", "DISPENSE", -30, "rx-001", "Dispensed", "staff-pharm-01"),
@@ -603,7 +673,7 @@ class Command(BaseCommand):
         for slid, mid, bno, stype, qty, refid, note, pby in stock_specs:
             med = Medicine.objects.get(pk=mid)
             performer = Staff.objects.filter(pk=pby).first()
-            StockLedgerEntry.objects.get_or_create(
+            StockLedgerEntry.objects.update_or_create(
                 entry_id=slid,
                 defaults={
                     "medicine": med,
@@ -865,7 +935,7 @@ class Command(BaseCommand):
             ("DOCTOR", "dr.sreelakshmi", "Doctor@123", "Dr. Sreelakshmi Nair"),
             ("RECEPTIONIST", "reception1", "Reception@123", "Anjali Menon"),
             ("RECEPTIONIST", "reception2", "Reception@123", "Deepa Vijayan"),
-            ("PHARMACIST", "pharmacy1", "Pharmacy@123", "Lakshmi Devi"),
+            ("PHARMACIST", "pharmacy1", "Pharmacy@123", "Abhijith A S"),
             ("PHARMACIST", "pharmacy2", "Pharmacy@123", "Vishnu Prasad"),
             ("LAB_TECH", "lab1", "Lab@123", "Arjun Pillai"),
             ("LAB_TECH", "lab2", "Lab@123", "Divya Suresh"),

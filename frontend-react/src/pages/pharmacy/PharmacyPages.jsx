@@ -1576,6 +1576,7 @@ export function PharmacyPurchasesPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [purchaseSearchParams, setPurchaseSearchParams] = useSearchParams();
+  const handledPreselectedMedicineId = useRef('');
   const preselectedMedicineId = purchaseSearchParams.get('medicine') || '';
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -1643,7 +1644,19 @@ export function PharmacyPurchasesPage() {
   ));
 
   useEffect(() => {
-    if (!preselectedMedicineId || suppliersLoading || medicinesLoading || suppliersError || medicinesError) return;
+    if (!preselectedMedicineId) {
+      handledPreselectedMedicineId.current = '';
+      return;
+    }
+    if (
+      handledPreselectedMedicineId.current === preselectedMedicineId
+      || suppliersLoading
+      || medicinesLoading
+      || suppliersError
+      || medicinesError
+    ) return;
+
+    handledPreselectedMedicineId.current = preselectedMedicineId;
     const matchingSupplier = suppliers.find((supplier) => supplier.isActive && (
       supplierCatalogueRows(supplier, activeMedicines).some((entry) => entry.medicineId === preselectedMedicineId)
     ));
